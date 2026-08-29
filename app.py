@@ -1,19 +1,32 @@
-import os, re, json, time, base64, struct, threading
+import os, re, json, time, base64, threading, asyncio, tempfile, uuid
 import requests
 from flask import Flask, request, jsonify
+from google import genai
+from google.genai import types as gtypes
 
 app = Flask(__name__)
 
-GEMINI_KEYS = [k for k in [os.getenv("GEMINI_KEY_A"), os.getenv("GEMINI_KEY_B")] if k]
+# ============ SECRETOS (viven en Render) ============
+GEMINI_KEY_A = os.getenv("GEMINI_KEY_A")
+GEMINI_KEY_B = os.getenv("GEMINI_KEY_B")
 GROQ_KEY = os.getenv("GROQ_KEY")
 META_TOKEN = os.getenv("META_TOKEN")
 META_PHONE_ID = os.getenv("META_PHONE_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "SaludMexicali2026")
 
-MODELOS_GEMINI = ["gemini-2.5-flash", "gemini-2.0-flash"]
-GEMINI_TTS = "gemini-2.5-flash-preview-tts"
-GROQ_TEXT = "llama-3.3-70b-versatile"
-GROQ_VISION = "llama-4-maverick-17b-128e"
+# Clientes Gemini (misma receta probada del bot de idiomas)
+def _mk_client(k):
+    if not k: return None
+    try: return genai.Client(api_key=k)
+    except Exception: return None
+
+cliente_gemini_a = _mk_client(GEMINI_KEY_A)
+cliente_gemini_b = _mk_client(GEMINI_KEY_B)
+
+# Modelos VIVOS (los del bot de idiomas que ya funcionan)
+MODELOS_GEMINI = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"]
+MODELOS_GROQ = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+VOZ_EDGE = "es-MX-DaliaNeural"  # Voz cálida mexicana (Edge TTS)
 
 USO = {"gemini_a":0,"gemini_b":0,"groq":0,"web":0,"whatsapp":0,"fotos":0,"voces":0,"audios":0}
 ERRORES = []
@@ -54,11 +67,6 @@ def limpiar(txt):
     txt = re.sub(r"VALORES:.+", "", txt or "")
     return txt.strip(), triage, valores
 
-def pcm_to_wav(pcm, rate=24000):
-    return (b"RIFF" + struct.pack("<I", 36 + len(pcm)) + b"WAVEfmt " +
-            struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16) +
-            b"data" + struct.pack("<I", len(pcm)) + pcm)
-
 def datos_pac(raw):
     try:
         d = json.loads(raw or "{}")
@@ -84,110 +92,162 @@ def recordar(p, linea):
         p["hist"].append(linea)
         if len(p["hist"]) > 10: p["hist"] = p["hist"][-10:]
 
-def gemini_gen(parts, key, modelo):
-    r = requests.post(
-        "https://generativelanguage.googleapis.com/v1beta/models/" + modelo + ":generateContent",
-        headers={"x-goog-api-key": key},
-        json={"system_instruction": {"parts": [{"text": SYSTEM}]},
-              "contents": [{"parts": parts}],
-              "generationConfig": {"temperature": 0.4}}, timeout=15)
-    r.raise_for_status()
-    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
-
-def generar_texto(prompt):
-    for i, key in enumerate(GEMINI_KEYS):
-        for mod in MODELOS_GEMINI:
-            try:
-                t = gemini_gen([{"text": prompt}], key, mod)
-                contar("gemini_a" if i == 0 else "gemini_b")
+# ============ GEMINI (SDK oficial, misma receta del bot de idiomas) ============
+def gemini_gen_texto(prompt, cliente, etiqueta):
+    if not cliente: return None
+    for mod in MODELOS_GEMINI:
+        try:
+            r = cliente.models.generate_content(
+                model=mod,
+                contents=[{"role": "user", "parts": [{"text": prompt}]}],
+                config=gtypes.GenerateContentConfig(system_instruction=SYSTEM, temperature=0.4),
+            )
+            t = (r.text or "").strip()
+            if t:
+                contar(etiqueta)
                 return t
-            except Exception as e:
-                fallo("gemini" + ("A" if i == 0 else "B") + "/" + mod + ": " + str(e))
-    if GROQ_KEY:
+        except Exception as e:
+            fallo(f"{etiqueta}/{mod}: {str(e)[:60]}")
+    return None
+
+def gemini_gen_foto(b64, mime, cliente, etiqueta):
+    if not cliente: return None
+    for mod in MODELOS_GEMINI:
+        try:
+            r = cliente.models.generate_content(
+                model=mod,
+                contents=[{"role": "user", "parts": [
+                    {"text": "El paciente manda una FOTO de su aparato de medicion. Lee con cuidado los numeros y acompana."},
+                    gtypes.Part.from_bytes(data=base64.b64decode(b64), mime_type=mime)
+                ]}],
+                config=gtypes.GenerateContentConfig(system_instruction=SYSTEM, temperature=0.4),
+            )
+            t = (r.text or "").strip()
+            if t:
+                contar(etiqueta)
+                return t
+        except Exception as e:
+            fallo(f"foto {etiqueta}/{mod}: {str(e)[:60]}")
+    return None
+
+def gemini_gen_voz(audio_bytes, mime, cliente, etiqueta):
+    if not cliente: return None
+    for mod in MODELOS_GEMINI:
+        try:
+            r = cliente.models.generate_content(
+                model=mod,
+                contents=[{"role": "user", "parts": [
+                    {"text": "El paciente manda una NOTA DE VOZ. Escuchala, entiende sus numeros o su duda y acompana."},
+                    gtypes.Part.from_bytes(data=audio_bytes, mime_type=mime)
+                ]}],
+                config=gtypes.GenerateContentConfig(system_instruction=SYSTEM, temperature=0.4),
+            )
+            t = (r.text or "").strip()
+            if t:
+                contar(etiqueta)
+                return t
+        except Exception as e:
+            fallo(f"voz {etiqueta}/{mod}: {str(e)[:60]}")
+    return None
+
+# ============ GROQ (texto, vision y whisper) ============
+def groq_gen_texto(prompt):
+    if not GROQ_KEY: return None
+    for mod in MODELOS_GROQ:
         try:
             r = requests.post("https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": "Bearer " + GROQ_KEY},
-                json={"model": GROQ_TEXT, "messages": [
+                json={"model": mod, "messages": [
                     {"role": "system", "content": SYSTEM},
-                    {"role": "user", "content": prompt}]}, timeout=15)
+                    {"role": "user", "content": prompt}]}, timeout=30)
             r.raise_for_status()
             contar("groq")
             return r.json()["choices"][0]["message"]["content"]
         except Exception as e:
-            fallo("groq: " + str(e))
+            fallo(f"groq/{mod}: {str(e)[:60]}")
     return None
 
-def generar_foto(b64, mime):
-    for i, key in enumerate(GEMINI_KEYS):
-        for mod in MODELOS_GEMINI:
-            try:
-                t = gemini_gen([{"text": "El paciente manda una FOTO de su aparato. Lee con cuidado los numeros y acompana."},
-                                {"inline_data": {"mime_type": mime, "data": b64}}], key, mod)
-                contar("gemini_a" if i == 0 else "gemini_b")
-                return t
-            except Exception as e:
-                fallo("foto gemini" + ("A" if i == 0 else "B") + "/" + mod + ": " + str(e))
-    if GROQ_KEY:
+def groq_gen_foto(b64, mime):
+    if not GROQ_KEY: return None
+    for mod in ["llama-3.2-90b-vision-preview", "llama-3.2-11b-vision-preview"]:
         try:
             r = requests.post("https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": "Bearer " + GROQ_KEY},
-                json={"model": GROQ_VISION, "messages": [
+                json={"model": mod, "messages": [
                     {"role": "system", "content": SYSTEM},
                     {"role": "user", "content": [
                         {"type": "text", "text": "Lee los numeros de esta foto de un tensiometro o glucometro y acompana."},
-                        {"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + b64}}]}]}, timeout=15)
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+                    ]}]}, timeout=30)
             r.raise_for_status()
             contar("groq")
             return r.json()["choices"][0]["message"]["content"]
         except Exception as e:
-            fallo("foto groq: " + str(e))
+            fallo(f"groq vision/{mod}: {str(e)[:60]}")
     return None
 
-def generar_voz(audio, mime):
-    for i, key in enumerate(GEMINI_KEYS):
-        for mod in MODELOS_GEMINI:
-            try:
-                t = gemini_gen([{"text": "El paciente manda una NOTA DE VOZ. Escuchala, entiende sus numeros o su duda y acompana."},
-                                {"inline_data": {"mime_type": mime, "data": base64.b64encode(audio).decode()}}], key, mod)
-                contar("gemini_a" if i == 0 else "gemini_b")
-                return t
-            except Exception as e:
-                fallo("voz gemini" + ("A" if i == 0 else "B") + "/" + mod + ": " + str(e))
-    if GROQ_KEY:
-        try:
-            r = requests.post("https://api.groq.com/openai/v1/audio/transcriptions",
-                headers={"Authorization": "Bearer " + GROQ_KEY},
-                files={"file": ("voz.webm", audio, mime)},
-                data={"model": "whisper-large-v3"}, timeout=15)
-            r.raise_for_status()
-            contar("groq")
-            return generar_texto("El paciente dijo por voz: " + r.json().get("text", ""))
-        except Exception as e:
-            fallo("voz groq: " + str(e))
+def groq_transcribir(audio_bytes, mime):
+    if not GROQ_KEY: return None
+    try:
+        r = requests.post("https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": "Bearer " + GROQ_KEY},
+            files={"file": ("voz.webm", audio_bytes, mime)},
+            data={"model": "whisper-large-v3"}, timeout=30)
+        r.raise_for_status()
+        contar("groq")
+        return r.json().get("text", "")
+    except Exception as e:
+        fallo(f"groq whisper: {str(e)[:60]}")
+        return None
+
+# ============ Orquestadores (cadena: Gemini A -> B -> Groq) ============
+def generar_texto(prompt):
+    t = gemini_gen_texto(prompt, cliente_gemini_a, "gemini_a")
+    if t: return t
+    t = gemini_gen_texto(prompt, cliente_gemini_b, "gemini_b")
+    if t: return t
+    return groq_gen_texto(prompt)
+
+def generar_foto(b64, mime):
+    t = gemini_gen_foto(b64, mime, cliente_gemini_a, "gemini_a")
+    if t: return t
+    t = gemini_gen_foto(b64, mime, cliente_gemini_b, "gemini_b")
+    if t: return t
+    return groq_gen_foto(b64, mime)
+
+def generar_voz(audio_bytes, mime):
+    t = gemini_gen_voz(audio_bytes, mime, cliente_gemini_a, "gemini_a")
+    if t: return t
+    t = gemini_gen_voz(audio_bytes, mime, cliente_gemini_b, "gemini_b")
+    if t: return t
+    txt = groq_transcribir(audio_bytes, mime)
+    if txt:
+        return generar_texto("El paciente dijo por voz: " + txt)
     return None
+
+# ============ TTS con Edge TTS (probado en bot de idiomas) ============
+async def _edge_tts_async(texto):
+    try:
+        import edge_tts
+        ruta = os.path.join(tempfile.gettempdir(), "salud_" + str(uuid.uuid4()) + ".mp3")
+        c = edge_tts.Communicate(texto, VOZ_EDGE)
+        await c.save(ruta)
+        with open(ruta, "rb") as f:
+            data = f.read()
+        try: os.remove(ruta)
+        except: pass
+        contar("audios")
+        return base64.b64encode(data).decode(), "audio/mpeg"
+    except Exception as e:
+        fallo(f"edge_tts: {str(e)[:60]}")
+        return None, None
 
 def tts(texto):
-    for key in GEMINI_KEYS:
-        try:
-            r = requests.post(
-                "https://generativelanguage.googleapis.com/v1beta/models/" + GEMINI_TTS + ":generateContent",
-                headers={"x-goog-api-key": key},
-                json={"contents": [{"parts": [{"text": texto}]}],
-                      "generationConfig": {"response_modalities": ["AUDIO"],
-                                           "speech_config": {"voice_config": {"prebuilt_voice_config": {"voice_name": "Leda"}}}}},
-                timeout=15)
-            r.raise_for_status()
-            part = r.json()["candidates"][0]["content"]["parts"][0]
-            d = part.get("inline_data", {})
-            pcm = base64.b64decode(d.get("data", ""))
-            rate = 24000
-            mr = re.search(r"rate=(\d+)", d.get("mime_type", ""))
-            if mr: rate = int(mr.group(1))
-            contar("audios")
-            return base64.b64encode(pcm_to_wav(pcm, rate)).decode()
-        except Exception as e:
-            fallo("tts: " + str(e))
-    return None
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_edge_tts_async(texto))
+    finally:
+        loop.close()
 
 def finalizar(txt_crudo, canal, tipo, usuario, pid, nombre):
     p = registrar(pid, nombre)
@@ -197,31 +257,41 @@ def finalizar(txt_crudo, canal, tipo, usuario, pid, nombre):
     recordar(p, tipo + " " + usuario + " -> " + triage + " " + json.dumps(valores))
     BITACORA.append({"ts": time.strftime("%Y-%m-%d %H:%M"), "canal": canal, "pac": pid,
                      "usuario": usuario, "bot": texto, "triage": triage, "valores": valores})
-    audio = tts(texto)
-    return jsonify({"texto": texto, "audio": audio, "triage": triage, "valores": valores})
+    audio_b64, audio_mime = tts(texto)
+    return jsonify({"texto": texto, "audio": audio_b64, "audio_mime": audio_mime, "triage": triage, "valores": valores})
 
+# ============ RUTAS WEB ============
 @app.route("/")
 def inicio():
     return HTML
 
 @app.route("/test")
 def test():
-    out = {}
-    for i, key in enumerate(GEMINI_KEYS):
+    out = {"gemini_a": "SIN_LLAVE", "gemini_b": "SIN_LLAVE", "groq": "SIN_LLAVE", "edge_tts": "PENDIENTE"}
+    if cliente_gemini_a:
         try:
-            t = gemini_gen([{"text": "responde solo: ok"}], key, MODELOS_GEMINI[0])
-            out["gemini_" + ("a" if i == 0 else "b")] = "OK: " + t[:60]
+            t = gemini_gen_texto("responde solo: ok", cliente_gemini_a, "gemini_a")
+            out["gemini_a"] = "OK: " + (t or "")[:60] if t else "FALLO"
         except Exception as e:
-            out["gemini_" + ("a" if i == 0 else "b")] = "ERROR: " + str(e)[:300]
+            out["gemini_a"] = "ERROR: " + str(e)[:200]
+    if cliente_gemini_b:
+        try:
+            t = gemini_gen_texto("responde solo: ok", cliente_gemini_b, "gemini_b")
+            out["gemini_b"] = "OK: " + (t or "")[:60] if t else "FALLO"
+        except Exception as e:
+            out["gemini_b"] = "ERROR: " + str(e)[:200]
     if GROQ_KEY:
         try:
-            r = requests.post("https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": "Bearer " + GROQ_KEY},
-                json={"model": GROQ_TEXT, "messages": [{"role": "user", "content": "responde solo: ok"}]}, timeout=15)
-            r.raise_for_status()
-            out["groq"] = "OK: " + r.json()["choices"][0]["message"]["content"][:60]
+            t = groq_gen_texto("responde solo: ok")
+            out["groq"] = "OK: " + (t or "")[:60] if t else "FALLO"
         except Exception as e:
-            out["groq"] = "ERROR: " + str(e)[:300]
+            out["groq"] = "ERROR: " + str(e)[:200]
+    # Test Edge TTS
+    try:
+        a, m = tts("prueba")
+        out["edge_tts"] = "OK " + (m or "") + " tam=" + str(len(a or ""))
+    except Exception as e:
+        out["edge_tts"] = "ERROR: " + str(e)[:200]
     return jsonify(out)
 
 @app.route("/manifest.webmanifest")
@@ -265,6 +335,7 @@ def api_voz():
 def stats():
     return jsonify({"uso": USO, "errores": ERRORES, "pacientes": list(PAC.keys()), "bitacora": BITACORA[-50:]})
 
+# ============ PUERTA WHATSAPP (dormida) ============
 @app.route("/webhook", methods=["GET"])
 def verificar():
     if request.args.get("hub.verify_token") == VERIFY_TOKEN:
@@ -325,7 +396,7 @@ HTML = """<!DOCTYPE html>
  #bar button{font-size:24px;border:none;border-radius:12px;background:#0f274d;color:#fff;padding:0 16px}
  #inst{display:none;margin:8px auto;background:#e8f5e9;border:2px solid #4c8;padding:8px 16px;font-size:18px;border-radius:12px}
  #ficha{margin:10px auto;background:#fff;padding:14px;border-radius:14px;box-shadow:0 1px 6px rgba(0,0,0,.2);text-align:center}
- #ficha input{font-size:20px;margin:6px;padding:10px;border-radius:10px;border:2px solid #bbc;display:block}
+ #ficha input{font-size:20px;margin:6px;padding:10px;border-radius:10px;border:2px solid #bbc;display:block;width:80%;margin-left:auto;margin-right:auto}
 </style>
 </head>
 <body>
@@ -349,12 +420,12 @@ HTML = """<!DOCTYPE html>
 const chat=document.getElementById('chat');
 const pac=()=>localStorage.getItem('pac')||'';
 function pinta(q,t){const d=document.createElement('div');d.className='b '+(q?'yo':'bot');d.innerHTML=t;chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d}
-function suena(b){if(!b)return;new Audio('data:audio/wav;base64,'+b).play()}
+function suena(b,mime){if(!b)return;new Audio('data:'+(mime||'audio/mpeg')+';base64,'+b).play()}
 function botMsg(d){const t=(d.texto||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\\n/g,'<br>');
- pinta(false,t+(d.audio?'<br><button class="oir" data-a="'+d.audio+'">🔊 Oir</button>':''));suena(d.audio)}
+ pinta(false,t+(d.audio?'<br><button class="oir" data-a="'+d.audio+'" data-m="'+d.audio_mime+'">🔊 Oir</button>':''));suena(d.audio,d.audio_mime)}
 async function api(url,body){pinta(false,'...');
  try{const r=await fetch(url,{method:'POST',body});
-  if(!r.ok){chat.lastChild.remove();pinta(false,'⚠️ Error '+r.status+': la IA tardo o fallo. Abre /test para ver por que.');return}
+  if(!r.ok){chat.lastChild.remove();pinta(false,'⚠️ Error '+r.status+'. Abre /test para ver por que.');return}
   const d=await r.json();chat.lastChild.remove();botMsg(d)}
  catch(e){chat.lastChild.remove();pinta(false,'⚠️ Sin conexion con el servidor: '+e)}}
 if(!pac()){document.getElementById('ficha').style.display='block'}
@@ -378,7 +449,7 @@ document.getElementById('bvoz').onclick=async()=>{
  rec.onstop=()=>{st.getTracks().forEach(t=>t.stop());pinta(true,'🎤 (voz)');
   const fd=new FormData();fd.append('audio',new Blob(chunks,{type:'audio/webm'}),'voz.webm');fd.append('pac',pac());api('/api/voz',fd)};
  rec.start()};
-document.addEventListener('click',e=>{if(e.target.dataset&&e.target.dataset.a)suena(e.target.dataset.a)});
+document.addEventListener('click',e=>{if(e.target.dataset&&e.target.dataset.a)suena(e.target.dataset.a,e.target.dataset.m)});
 let evtI=null;
 window.addEventListener('beforeinstallprompt',e=>{evtI=e;document.getElementById('inst').style.display='block'});
 document.getElementById('inst').onclick=async()=>{if(evtI){evtI.prompt();document.getElementById('inst').style.display='none'}};

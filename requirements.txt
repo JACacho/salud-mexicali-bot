@@ -1,3 +1,5 @@
 flask
-requests
 gunicorn
+requests
+google-genai
+edge-tts
