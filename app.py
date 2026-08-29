@@ -24,7 +24,7 @@ cliente_gemini_a = _mk_client(GEMINI_KEY_A)
 cliente_gemini_b = _mk_client(GEMINI_KEY_B)
 
 # Modelos VIVOS (los del bot de idiomas que ya funcionan)
-MODELOS_GEMINI = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"]
+MODELOS_GEMINI = ["gemini-3-flash", "gemini-3-flash-preview", "gemini-3-pro", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.5-flash"]
 MODELOS_GROQ = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 VOZ_EDGE = "es-MX-DaliaNeural"  # Voz cálida mexicana (Edge TTS)
 
