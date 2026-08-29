@@ -4,28 +4,32 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# ============ SECRETOS (solo viven en Render) ============
 GEMINI_KEYS = [k for k in [os.getenv("GEMINI_KEY_A"), os.getenv("GEMINI_KEY_B")] if k]
 GROQ_KEY = os.getenv("GROQ_KEY")
 META_TOKEN = os.getenv("META_TOKEN")
 META_PHONE_ID = os.getenv("META_PHONE_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "SaludMexicali2026")
 
-GEMINI_TEXT = "gemini-2.5-flash"
+MODELOS_GEMINI = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
 GEMINI_TTS = "gemini-2.5-flash-preview-tts"
 GROQ_TEXT = "llama-3.3-70b-versatile"
 GROQ_VISION = "llama-4-maverick-17b-128e"
 
-# ============ CONTADORES Y BITÁCORA ============
 USO = {"gemini_a":0,"gemini_b":0,"groq":0,"web":0,"whatsapp":0,"fotos":0,"voces":0,"audios":0}
-LOCK = threading.Lock()
+ERRORES = []
 BITACORA = []
+PAC = {}
+LOCK = threading.Lock()
 
 def contar(k):
     with LOCK: USO[k] = USO.get(k, 0) + 1
 
+def fallo(msg):
+    ERRORES.append(time.strftime("%H:%M") + " " + str(msg)[:200])
+    if len(ERRORES) > 20: ERRORES.pop(0)
+
 SYSTEM = ("Eres 'Salud Mexicali', asistente calido de salud para adultos mayores con hipertension y diabetes, en espanol de Mexico.\n"
-"Habla con frases cortas, carinosas y claras. Felicita los buenos registros y tranquiliza con ternura.\n"
+"Habla con frases cortas, carinosas y claras. Si conoces el nombre del paciente, usalo con carino.\n"
 "Criterios por defecto (adulto mayor): normal: TA hasta 139/89 y glucosa 70-180; moderado: TA 140-159/90-99 o glucosa 181-250; critico: TA 160 o mas, o glucosa mayor a 250 o menor a 70, o sintomas como dolor de pecho, confusion o vision borrosa.\n"
 "Si es critico: pide con carino que se vuelva a medir en 5 minutos sentado y avisa que notificaras a su familia.\n"
 "Al final agrega SIEMPRE, en lineas separadas, exactamente:\n"
@@ -55,10 +59,34 @@ def pcm_to_wav(pcm, rate=24000):
             struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16) +
             b"data" + struct.pack("<I", len(pcm)) + pcm)
 
-# ============ CADENA DE PROVEEDORES (nunca se cae) ============
-def gemini_gen(parts, key):
+def datos_pac(raw):
+    try:
+        d = json.loads(raw or "{}")
+        return d.get("n", ""), d.get("t", "")
+    except Exception:
+        return "", ""
+
+def registrar(pid, nombre):
+    if pid:
+        p = PAC.setdefault(pid, {"nombre": nombre or "cariño", "hist": []})
+        if nombre: p["nombre"] = nombre
+        return p
+    return None
+
+def contexto(p):
+    if not p: return ""
+    hist = " | ".join([h for h in p["hist"][-5:]])
+    return ("\nDATOS DEL PACIENTE: nombre=" + p["nombre"] + ". Su historia reciente: " + hist +
+            "\nLlamalo por su nombre y recuerda su historia.")
+
+def recordar(p, linea):
+    if p:
+        p["hist"].append(linea)
+        if len(p["hist"]) > 10: p["hist"] = p["hist"][-10:]
+
+def gemini_gen(parts, key, modelo):
     r = requests.post(
-        "https://generativelanguage.googleapis.com/v1beta/models/" + GEMINI_TEXT + ":generateContent",
+        "https://generativelanguage.googleapis.com/v1beta/models/" + modelo + ":generateContent",
         headers={"x-goog-api-key": key},
         json={"system_instruction": {"parts": [{"text": SYSTEM}]},
               "contents": [{"parts": parts}],
@@ -68,12 +96,13 @@ def gemini_gen(parts, key):
 
 def generar_texto(prompt):
     for i, key in enumerate(GEMINI_KEYS):
-        try:
-            t = gemini_gen([{"text": prompt}], key)
-            contar("gemini_a" if i == 0 else "gemini_b")
-            return t
-        except Exception:
-            continue
+        for mod in MODELOS_GEMINI:
+            try:
+                t = gemini_gen([{"text": prompt}], key, mod)
+                contar("gemini_a" if i == 0 else "gemini_b")
+                return t
+            except Exception as e:
+                fallo("gemini" + ("A" if i == 0 else "B") + "/" + mod + ": " + str(e))
     if GROQ_KEY:
         try:
             r = requests.post("https://api.groq.com/openai/v1/chat/completions",
@@ -84,19 +113,20 @@ def generar_texto(prompt):
             r.raise_for_status()
             contar("groq")
             return r.json()["choices"][0]["message"]["content"]
-        except Exception:
-            pass
+        except Exception as e:
+            fallo("groq: " + str(e))
     return None
 
 def generar_foto(b64, mime):
     for i, key in enumerate(GEMINI_KEYS):
-        try:
-            t = gemini_gen([{"text": "El paciente manda una FOTO de su aparato. Lee con cuidado los numeros y acompana."},
-                            {"inline_data": {"mime_type": mime, "data": b64}}], key)
-            contar("gemini_a" if i == 0 else "gemini_b")
-            return t
-        except Exception:
-            continue
+        for mod in MODELOS_GEMINI:
+            try:
+                t = gemini_gen([{"text": "El paciente manda una FOTO de su aparato. Lee con cuidado los numeros y acompana."},
+                                {"inline_data": {"mime_type": mime, "data": b64}}], key, mod)
+                contar("gemini_a" if i == 0 else "gemini_b")
+                return t
+            except Exception as e:
+                fallo("foto gemini" + ("A" if i == 0 else "B") + "/" + mod + ": " + str(e))
     if GROQ_KEY:
         try:
             r = requests.post("https://api.groq.com/openai/v1/chat/completions",
@@ -109,19 +139,20 @@ def generar_foto(b64, mime):
             r.raise_for_status()
             contar("groq")
             return r.json()["choices"][0]["message"]["content"]
-        except Exception:
-            pass
+        except Exception as e:
+            fallo("foto groq: " + str(e))
     return None
 
 def generar_voz(audio, mime):
     for i, key in enumerate(GEMINI_KEYS):
-        try:
-            t = gemini_gen([{"text": "El paciente manda una NOTA DE VOZ. Escuchala, entiende sus numeros o su duda y acompana."},
-                            {"inline_data": {"mime_type": mime, "data": base64.b64encode(audio).decode()}}], key)
-            contar("gemini_a" if i == 0 else "gemini_b")
-            return t
-        except Exception:
-            continue
+        for mod in MODELOS_GEMINI:
+            try:
+                t = gemini_gen([{"text": "El paciente manda una NOTA DE VOZ. Escuchala, entiende sus numeros o su duda y acompana."},
+                                {"inline_data": {"mime_type": mime, "data": base64.b64encode(audio).decode()}}], key, mod)
+                contar("gemini_a" if i == 0 else "gemini_b")
+                return t
+            except Exception as e:
+                fallo("voz gemini" + ("A" if i == 0 else "B") + "/" + mod + ": " + str(e))
     if GROQ_KEY:
         try:
             r = requests.post("https://api.groq.com/openai/v1/audio/transcriptions",
@@ -131,8 +162,8 @@ def generar_voz(audio, mime):
             r.raise_for_status()
             contar("groq")
             return generar_texto("El paciente dijo por voz: " + r.json().get("text", ""))
-        except Exception:
-            pass
+        except Exception as e:
+            fallo("voz groq: " + str(e))
     return None
 
 def tts(texto):
@@ -154,20 +185,21 @@ def tts(texto):
             if mr: rate = int(mr.group(1))
             contar("audios")
             return base64.b64encode(pcm_to_wav(pcm, rate)).decode()
-        except Exception:
-            continue
+        except Exception as e:
+            fallo("tts: " + str(e))
     return None
 
-def finalizar(txt_crudo, canal, tipo, usuario):
+def finalizar(txt_crudo, canal, tipo, usuario, pid, nombre):
+    p = registrar(pid, nombre)
     if not txt_crudo:
-        return jsonify({"texto": "Ups, carino, no te escuche bien. Intenta otra vez, por favor.", "audio": None, "triage": "normal", "valores": {}})
+        return jsonify({"texto": "Ups, carino, no te escuche bien. Intenta otra vez, por favor.", "audio": None})
     texto, triage, valores = limpiar(txt_crudo)
-    audio = tts(texto)
-    BITACORA.append({"ts": time.strftime("%Y-%m-%d %H:%M"), "canal": canal, "tipo": tipo,
+    recordar(p, tipo + " " + usuario + " -> " + triage + " " + json.dumps(valores))
+    BITACORA.append({"ts": time.strftime("%Y-%m-%d %H:%M"), "canal": canal, "pac": pid,
                      "usuario": usuario, "bot": texto, "triage": triage, "valores": valores})
+    audio = tts(texto)
     return jsonify({"texto": texto, "audio": audio, "triage": triage, "valores": valores})
 
-# ============ PUERTA WEB ============
 @app.route("/")
 def inicio():
     return HTML
@@ -189,27 +221,30 @@ def sw():
 @app.route("/api/text", methods=["POST"])
 def api_text():
     contar("web")
-    t = request.get_json(force=True).get("texto", "")
-    return finalizar(generar_texto("El paciente escribe: " + t), "web", "texto", t)
+    d = request.get_json(force=True)
+    t = d.get("texto", "")
+    n, tel = datos_pac(d.get("pac", ""))
+    return finalizar(generar_texto(contexto(PAC.get(tel or n)) + "\nEl paciente escribe: " + t), "web", "texto", t, tel or n, n)
 
 @app.route("/api/foto", methods=["POST"])
 def api_foto():
     contar("web"); contar("fotos")
     f = request.files.get("foto")
+    n, tel = datos_pac(request.form.get("pac", ""))
     b64 = base64.b64encode(f.read()).decode()
-    return finalizar(generar_foto(b64, f.mimetype or "image/jpeg"), "web", "foto", "(foto)")
+    return finalizar(generar_foto(b64, f.mimetype or "image/jpeg"), "web", "foto", "(foto)", tel or n, n)
 
 @app.route("/api/voz", methods=["POST"])
 def api_voz():
     contar("web"); contar("voces")
     f = request.files.get("audio")
-    return finalizar(generar_voz(f.read(), f.mimetype or "audio/webm"), "web", "voz", "(nota de voz)")
+    n, tel = datos_pac(request.form.get("pac", ""))
+    return finalizar(generar_voz(f.read(), f.mimetype or "audio/webm"), "web", "voz", "(voz)", tel or n, n)
 
 @app.route("/stats")
 def stats():
-    return jsonify({"uso": USO, "bitacora": BITACORA[-50:]})
+    return jsonify({"uso": USO, "errores": ERRORES, "pacientes": list(PAC.keys()), "bitacora": BITACORA[-50:]})
 
-# ============ PUERTA WHATSAPP (dormida, lista) ============
 @app.route("/webhook", methods=["GET"])
 def verificar():
     if request.args.get("hub.verify_token") == VERIFY_TOKEN:
@@ -228,8 +263,9 @@ def recibir():
     try:
         msg = data["entry"][0]["changes"][0]["value"]["messages"][0]
         de = msg["from"]
+        p = registrar(de, "")
         if msg["type"] == "text":
-            crudo = generar_texto("El paciente escribe por WhatsApp: " + msg["text"]["body"])
+            crudo = generar_texto(contexto(p) + "\nEl paciente escribe por WhatsApp: " + msg["text"]["body"])
         elif msg["type"] == "image":
             mid = msg["image"]["id"]
             r1 = requests.get("https://graph.facebook.com/v21.0/" + mid, headers={"Authorization": "Bearer " + str(META_TOKEN)})
@@ -239,11 +275,12 @@ def recibir():
             enviar_wa(de, "Recibi tu mensaje, carino. En esta version leo fotos y texto.")
             return "OK", 200
         texto, triage, valores = limpiar(crudo or "")
-        BITACORA.append({"ts": time.strftime("%Y-%m-%d %H:%M"), "canal": "whatsapp", "tipo": msg["type"],
+        recordar(p, msg["type"] + " -> " + triage + " " + json.dumps(valores))
+        BITACORA.append({"ts": time.strftime("%Y-%m-%d %H:%M"), "canal": "whatsapp",
                          "usuario": msg.get("text", {}).get("body", "(foto)"), "bot": texto, "triage": triage, "valores": valores})
         enviar_wa(de, texto)
     except Exception as e:
-        print("Aviso:", e)
+        fallo("webhook: " + str(e))
     return "OK", 200
 
 HTML = """<!DOCTYPE html>
@@ -262,17 +299,25 @@ HTML = """<!DOCTYPE html>
  .b{max-width:80%;padding:12px 16px;border-radius:18px;line-height:1.4}
  .yo{align-self:flex-end;background:#0f274d;color:#fff}
  .bot{align-self:flex-start;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.15)}
- .bot button{font-size:22px;margin-top:6px}
+ .oir{font-size:22px;margin-top:6px}
  #bar{display:flex;gap:8px;padding:10px;background:#fff;border-top:2px solid #dde}
  #bar input{flex:1;font-size:20px;padding:12px;border-radius:12px;border:2px solid #bbc}
  #bar button{font-size:24px;border:none;border-radius:12px;background:#0f274d;color:#fff;padding:0 16px}
  #inst{display:none;margin:8px auto;background:#e8f5e9;border:2px solid #4c8;padding:8px 16px;font-size:18px;border-radius:12px}
+ #ficha{margin:10px auto;background:#fff;padding:14px;border-radius:14px;box-shadow:0 1px 6px rgba(0,0,0,.2);text-align:center}
+ #ficha input{font-size:20px;margin:6px;padding:10px;border-radius:10px;border:2px solid #bbc;display:block}
 </style>
 </head>
 <body>
 <header>❤️ Salud Mexicali</header>
 <button id="inst">📲 Instalar como app</button>
 <div id="chat"></div>
+<div id="ficha" style="display:none">
+ <b>Presentate para que te recuerde:</b>
+ <input id="fnom" placeholder="Tu nombre">
+ <input id="ftel" placeholder="Tu telefono (opcional)">
+ <button id="fok" style="font-size:20px;padding:8px 20px;border-radius:10px;border:none;background:#0f274d;color:#fff">Guardar</button>
+</div>
 <div id="bar">
  <button id="bfoto">📷</button>
  <button id="bvoz">🎤</button>
@@ -282,13 +327,23 @@ HTML = """<!DOCTYPE html>
 </div>
 <script>
 const chat=document.getElementById('chat');
-function pinta(q,t,extra){const d=document.createElement('div');d.className='b '+(q?'yo':'bot');d.innerHTML=t+(extra||'');chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d}
-function suena(b64){if(!b64)return;const a=new Audio('data:audio/wav;base64,'+b64);a.play()}
-async function pide(url,fd){pinta(false,'...');const r=await fetch(url,{method:'POST',body:fd});const d=await r.json();chat.lastChild.remove();pinta(false,d.texto.replace(/</g,'&lt;').replace(/\\n/g,'<br>')+(d.audio?'<br><button onclick="suena(\\''+d.audio+'\\')">🔊 Oir</button>':''));suena(d.audio)}
-document.getElementById('benv').onclick=async()=>{const t=document.getElementById('txt').value.trim();if(!t)return;document.getElementById('txt').value='';pinta(true,t);const fd=new FormData();fd.append('x','1');pide2(t)};
-async function pide2(t){pinta(false,'...');const r=await fetch('/api/text',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({texto:t})});const d=await r.json();chat.lastChild.remove();pinta(false,d.texto.replace(/</g,'&lt;').replace(/\\n/g,'<br>')+(d.audio?'<br><button data-a="'+d.audio+'">🔊 Oir</button>':''));suena(d.audio)}
+const pac=()=>localStorage.getItem('pac')||'';
+function pinta(q,t){const d=document.createElement('div');d.className='b '+(q?'yo':'bot');d.innerHTML=t;chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d}
+function suena(b){if(!b)return;new Audio('data:audio/wav;base64,'+b).play()}
+function botMsg(d){const t=(d.texto||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\\n/g,'<br>');
+ pinta(false,t+(d.audio?'<br><button class="oir" data-a="'+d.audio+'">🔊 Oir</button>':''));suena(d.audio)}
+async function api(url,body){pinta(false,'...');const r=await fetch(url,{method:'POST',body});const d=await r.json();chat.lastChild.remove();botMsg(d)}
+if(!pac()){document.getElementById('ficha').style.display='block'}
+document.getElementById('fok').onclick=()=>{const n=document.getElementById('fnom').value.trim()||'cariño';
+ localStorage.setItem('pac',JSON.stringify({n:n,t:document.getElementById('ftel').value.trim()}));
+ document.getElementById('ficha').style.display='none';
+ pinta(false,'Gracias, '+n+'. Ya me acuerdo de ti. ❤️')};
+document.getElementById('benv').onclick=()=>{const t=document.getElementById('txt').value.trim();if(!t)return;
+ document.getElementById('txt').value='';pinta(true,t);
+ api('/api/text',JSON.stringify({texto:t,pac:pac()}))};
 document.getElementById('bfoto').onclick=()=>document.getElementById('ffoto').click();
-document.getElementById('ffoto').onchange=e=>{const f=e.target.files[0];if(!f)return;pinta(true,'📷 (foto)');const fd=new FormData();fd.append('foto',f);pide('/api/foto',fd)};
+document.getElementById('ffoto').onchange=e=>{const f=e.target.files[0];if(!f)return;pinta(true,'📷 (foto)');
+ const fd=new FormData();fd.append('foto',f);fd.append('pac',pac());api('/api/foto',fd)};
 let rec=null,chunks=[];
 document.getElementById('bvoz').onclick=async()=>{
  if(rec){rec.stop();rec=null;document.getElementById('bvoz').textContent='🎤';return}
@@ -296,7 +351,8 @@ document.getElementById('bvoz').onclick=async()=>{
  const st=await navigator.mediaDevices.getUserMedia({audio:true});
  rec=new MediaRecorder(st);
  rec.ondataavailable=e=>chunks.push(e.data);
- rec.onstop=()=>{st.getTracks().forEach(t=>t.stop());pinta(true,'🎤 (nota de voz)');const fd=new FormData();fd.append('audio',new Blob(chunks,{type:'audio/webm'}),'voz.webm');pide('/api/voz',fd)};
+ rec.onstop=()=>{st.getTracks().forEach(t=>t.stop());pinta(true,'🎤 (voz)');
+  const fd=new FormData();fd.append('audio',new Blob(chunks,{type:'audio/webm'}),'voz.webm');fd.append('pac',pac());api('/api/voz',fd)};
  rec.start()};
 document.addEventListener('click',e=>{if(e.target.dataset&&e.target.dataset.a)suena(e.target.dataset.a)});
 let evtI=null;
