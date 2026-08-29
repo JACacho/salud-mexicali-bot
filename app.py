@@ -10,7 +10,7 @@ META_TOKEN = os.getenv("META_TOKEN")
 META_PHONE_ID = os.getenv("META_PHONE_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "SaludMexicali2026")
 
-MODELOS_GEMINI = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
+MODELOS_GEMINI = ["gemini-2.5-flash", "gemini-2.0-flash"]
 GEMINI_TTS = "gemini-2.5-flash-preview-tts"
 GROQ_TEXT = "llama-3.3-70b-versatile"
 GROQ_VISION = "llama-4-maverick-17b-128e"
@@ -90,7 +90,7 @@ def gemini_gen(parts, key, modelo):
         headers={"x-goog-api-key": key},
         json={"system_instruction": {"parts": [{"text": SYSTEM}]},
               "contents": [{"parts": parts}],
-              "generationConfig": {"temperature": 0.4}}, timeout=90)
+              "generationConfig": {"temperature": 0.4}}, timeout=15)
     r.raise_for_status()
     return r.json()["candidates"][0]["content"]["parts"][0]["text"]
 
@@ -109,7 +109,7 @@ def generar_texto(prompt):
                 headers={"Authorization": "Bearer " + GROQ_KEY},
                 json={"model": GROQ_TEXT, "messages": [
                     {"role": "system", "content": SYSTEM},
-                    {"role": "user", "content": prompt}]}, timeout=90)
+                    {"role": "user", "content": prompt}]}, timeout=15)
             r.raise_for_status()
             contar("groq")
             return r.json()["choices"][0]["message"]["content"]
@@ -135,7 +135,7 @@ def generar_foto(b64, mime):
                     {"role": "system", "content": SYSTEM},
                     {"role": "user", "content": [
                         {"type": "text", "text": "Lee los numeros de esta foto de un tensiometro o glucometro y acompana."},
-                        {"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + b64}}]}]}, timeout=90)
+                        {"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + b64}}]}]}, timeout=15)
             r.raise_for_status()
             contar("groq")
             return r.json()["choices"][0]["message"]["content"]
@@ -158,7 +158,7 @@ def generar_voz(audio, mime):
             r = requests.post("https://api.groq.com/openai/v1/audio/transcriptions",
                 headers={"Authorization": "Bearer " + GROQ_KEY},
                 files={"file": ("voz.webm", audio, mime)},
-                data={"model": "whisper-large-v3"}, timeout=90)
+                data={"model": "whisper-large-v3"}, timeout=15)
             r.raise_for_status()
             contar("groq")
             return generar_texto("El paciente dijo por voz: " + r.json().get("text", ""))
@@ -175,7 +175,7 @@ def tts(texto):
                 json={"contents": [{"parts": [{"text": texto}]}],
                       "generationConfig": {"response_modalities": ["AUDIO"],
                                            "speech_config": {"voice_config": {"prebuilt_voice_config": {"voice_name": "Leda"}}}}},
-                timeout=90)
+                timeout=15)
             r.raise_for_status()
             part = r.json()["candidates"][0]["content"]["parts"][0]
             d = part.get("inline_data", {})
@@ -203,6 +203,26 @@ def finalizar(txt_crudo, canal, tipo, usuario, pid, nombre):
 @app.route("/")
 def inicio():
     return HTML
+
+@app.route("/test")
+def test():
+    out = {}
+    for i, key in enumerate(GEMINI_KEYS):
+        try:
+            t = gemini_gen([{"text": "responde solo: ok"}], key, MODELOS_GEMINI[0])
+            out["gemini_" + ("a" if i == 0 else "b")] = "OK: " + t[:60]
+        except Exception as e:
+            out["gemini_" + ("a" if i == 0 else "b")] = "ERROR: " + str(e)[:300]
+    if GROQ_KEY:
+        try:
+            r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": "Bearer " + GROQ_KEY},
+                json={"model": GROQ_TEXT, "messages": [{"role": "user", "content": "responde solo: ok"}]}, timeout=15)
+            r.raise_for_status()
+            out["groq"] = "OK: " + r.json()["choices"][0]["message"]["content"][:60]
+        except Exception as e:
+            out["groq"] = "ERROR: " + str(e)[:300]
+    return jsonify(out)
 
 @app.route("/manifest.webmanifest")
 def manifest():
@@ -332,7 +352,11 @@ function pinta(q,t){const d=document.createElement('div');d.className='b '+(q?'y
 function suena(b){if(!b)return;new Audio('data:audio/wav;base64,'+b).play()}
 function botMsg(d){const t=(d.texto||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\\n/g,'<br>');
  pinta(false,t+(d.audio?'<br><button class="oir" data-a="'+d.audio+'">🔊 Oir</button>':''));suena(d.audio)}
-async function api(url,body){pinta(false,'...');const r=await fetch(url,{method:'POST',body});const d=await r.json();chat.lastChild.remove();botMsg(d)}
+async function api(url,body){pinta(false,'...');
+ try{const r=await fetch(url,{method:'POST',body});
+  if(!r.ok){chat.lastChild.remove();pinta(false,'⚠️ Error '+r.status+': la IA tardo o fallo. Abre /test para ver por que.');return}
+  const d=await r.json();chat.lastChild.remove();botMsg(d)}
+ catch(e){chat.lastChild.remove();pinta(false,'⚠️ Sin conexion con el servidor: '+e)}}
 if(!pac()){document.getElementById('ficha').style.display='block'}
 document.getElementById('fok').onclick=()=>{const n=document.getElementById('fnom').value.trim()||'cariño';
  localStorage.setItem('pac',JSON.stringify({n:n,t:document.getElementById('ftel').value.trim()}));
