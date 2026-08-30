@@ -15,6 +15,7 @@ def manejar_error(e):
 GEMINI_KEY_A = os.getenv("GEMINI_KEY_A")
 GEMINI_KEY_B = os.getenv("GEMINI_KEY_B")
 GROQ_KEY = os.getenv("GROQ_KEY")
+OR_KEY = os.getenv("OPENROUTER_KEY")
 META_TOKEN = os.getenv("META_TOKEN")
 META_PHONE_ID = os.getenv("META_PHONE_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "SaludMexicali2026")
@@ -143,6 +144,18 @@ def generar_texto(prompt, lang):
                 return r.json()["choices"][0]["message"]["content"]
             except Exception as e:
                 fallo(f"groq/{mod}: {str(e)[:60]}")
+    if OR_KEY:
+        for mod in ["deepseek/deepseek-v4-flash", "meta-llama/llama-3.3-70b-instruct:free", "google/gemini-2.0-flash-001"]:
+            try:
+                r = requests.post("https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization": "Bearer " + OR_KEY},
+                    json={"model": mod, "messages": [
+                        {"role": "system", "content": SYSTEM},
+                        {"role": "user", "content": prompt}]}, timeout=30)
+                r.raise_for_status()
+                return r.json()["choices"][0]["message"]["content"]
+            except Exception as e:
+                fallo(f"openrouter/{mod}: {str(e)[:60]}")
     return None
 
 def generar_foto(b64, mime, lang):
@@ -167,6 +180,20 @@ def generar_foto(b64, mime, lang):
                 return r.json()["choices"][0]["message"]["content"]
             except Exception as e:
                 fallo(f"groq vision/{mod}: {str(e)[:60]}")
+    if OR_KEY:
+        for mod in ["meta-llama/llama-3.2-90b-vision-instruct:free", "google/gemini-2.0-flash-001"]:
+            try:
+                r = requests.post("https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization": "Bearer " + OR_KEY},
+                    json={"model": mod, "messages": [
+                        {"role": "system", "content": SYSTEM},
+                        {"role": "user", "content": [
+                            {"type": "text", "text": "Lee los numeros de esta foto de un tensiometro o glucometro y acompana."},
+                            {"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + b64}}]}]}, timeout=30)
+                r.raise_for_status()
+                return r.json()["choices"][0]["message"]["content"]
+            except Exception as e:
+                fallo(f"openrouter vision/{mod}: {str(e)[:60]}")
     return None
 
 def generar_voz(audio, mime, lang):
