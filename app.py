@@ -43,7 +43,8 @@ def fallo(msg):
     ERRORES.append(time.strftime("%H:%M") + " " + str(msg)[:200])
     if len(ERRORES) > 20: ERRORES.pop(0)
 
-SYSTEM = ("Eres 'Salud Mexicali', asistente calido de salud para adultos mayores con hipertension y diabetes.\n"
+SYSTEM = ("Responde SIEMPRE con frases completas (nunca cortadas a la mitad), maximo 3 frases cortas, separadas por renglones, con palabras sencillas para adultos mayores.\n"
+"Eres 'Salud Mexicali', asistente calido de salud para adultos mayores con hipertension y diabetes.\n"
 "IDIOMA: responde SIEMPRE en el idioma del paciente (espanol o ingles).\n"
 "TRATO: si conoces el nombre del paciente (ver DATOS DEL PACIENTE), dirigete a el por su nombre con respeto y calidez (ej. 'don Antonio', 'senora Maria'); NUNCA uses 'corazon' ni 'carino' si ya sabes su nombre. Si no lo conoces, usa un trato amable neutro.\n"
 "Habla con frases cortas, claras y carinosas.\n"
@@ -114,7 +115,7 @@ def gemini_gen(parts, cliente, etiqueta, lang):
             r = cliente.models.generate_content(
                 model=mod,
                 contents=[{"role": "user", "parts": parts}],
-                config=gtypes.GenerateContentConfig(system_instruction=SYSTEM, temperature=0.4, max_output_tokens=500),
+                config=gtypes.GenerateContentConfig(system_instruction=SYSTEM, temperature=0.4, max_output_tokens=1024),
             )
             t = (r.text or "").strip()
             if t:
@@ -437,7 +438,7 @@ let evtI=null;
 window.addEventListener('beforeinstallprompt',e=>{evtI=e;document.getElementById('inst').style.display='block'});
 document.getElementById('inst').onclick=async()=>{if(evtI){evtI.prompt();document.getElementById('inst').style.display='none'}};
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js');
-pinta(false,'Hola, soy tu asistente de salud. ❤️ Mandame tu presion, tu glucosa, una foto o una nota de voz, y yo te acompano. / Hi, I am your health assistant. ❤️ Send me your blood pressure, glucose, a photo or a voice note.');
+pinta(false,'Hola, soy su asistente de salud. ❤️<br><br>Yo le puedo ayudar si me manda:<br>• Su presión arterial<br>• Su glucosa<br>• Una foto de su aparato<br>• O una nota de voz<br><br>¿Cómo se siente hoy?');
 </script>
 </body>
 </html>"""
