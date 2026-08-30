@@ -1,10 +1,16 @@
-import os, re, json, time, base64, threading, asyncio, tempfile, uuid
+import os, re, json, time, base64, threading, asyncio, tempfile, uuid, traceback
 import requests
 from flask import Flask, request, jsonify
 from google import genai
 from google.genai import types as gtypes
 
 app = Flask(__name__)
+
+@app.errorhandler(Exception)
+def manejar_error(e):
+    tb = traceback.format_exc()
+    fallo("EXC: " + tb[-400:])
+    return jsonify({"error": str(e), "tb": tb[-600:]}), 500
 
 GEMINI_KEY_A = os.getenv("GEMINI_KEY_A")
 GEMINI_KEY_B = os.getenv("GEMINI_KEY_B")
