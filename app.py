@@ -274,7 +274,8 @@ def api_text():
     n, tel = datos_pac(d.get("pac", ""))
     lp = d.get("lang", "auto")
     lang = lp if lp in ("es", "en") else detectar_idioma(t)
-    return finalizar(generar_texto(contexto(PAC.get(tel or n)) + "\nEl paciente escribe: " + t + sufijo_lang(lang)), "web", "texto", t, tel or n, n, lang)
+    return finalizar(generar_texto(contexto(PAC.get(tel or n)) + "\nEl paciente escribe: " + t + sufijo_lang(lang), lang), "web", "texto", t, tel or n, n, lang)
+
 
 @app.route("/api/foto", methods=["POST"])
 def api_foto():
