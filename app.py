@@ -77,7 +77,7 @@ def limpiar(txt):
         gl = re.search(r"GLUCOSA\s*=?\s*(\d{2,3})", s)
         if gl: valores["glucosa"] = gl.group(1)
     txt = re.sub(r"TRIAGE:\s*(normal|moderado|critico)", "", txt or "", flags=re.I)
-    txt = re.sub(r"VALORES:.+", "", txt or "")
+    txt = re.sub(r"VALORES:.*", "", txt or "")
     return txt.strip(), triage, valores
 
 def datos_pac(raw):
