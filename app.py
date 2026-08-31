@@ -16,6 +16,24 @@ GEMINI_KEY_A = os.getenv("GEMINI_KEY_A")
 GEMINI_KEY_B = os.getenv("GEMINI_KEY_B")
 GROQ_KEY = os.getenv("GROQ_KEY")
 OR_KEY = os.getenv("OPENROUTER_KEY")
+TR_KEY = os.getenv("TOKENROUTER_KEY")
+TR_URL = "https://api.to.tokenrouter.com/v1/chat/completions"
+TR_MODELOS = ["z-ai/glm-5.3-free", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"]
+HF_KEY = os.getenv("HUGGINGFACE_KEY")
+HF_URL = "https://router.huggingface.co/v1/chat/completions"
+HF_MODELOS = ["Qwen/Qwen3-8B", "meta-llama/Llama-3.1-8B-Instruct"]
+PROV = {}
+USU = {}
+
+def prov_stats(nombre, ok):
+    p = PROV.setdefault(nombre, {"ok":0,"fail":0})
+    if ok: p["ok"] += 1
+    else: p["fail"] += 1
+
+def orden_proveedores():
+    base = ["gemini_a","gemini_b","groq","openrouter","tokenrouter","huggingface"]
+    return sorted(base, key=lambda n: (PROV.get(n,{}).get("ok",0) - PROV.get(n,{}).get("fail",0)), reverse=True)
+
 META_TOKEN = os.getenv("META_TOKEN")
 META_PHONE_ID = os.getenv("META_PHONE_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "SaludMexicali2026")
@@ -127,35 +145,61 @@ def gemini_gen(parts, cliente, etiqueta, lang):
     return None
 
 def generar_texto(prompt, lang):
-    t = gemini_gen([{"text": prompt}], cliente_gemini_a, "gemini_a", lang)
-    if t: return t
-    t = gemini_gen([{"text": prompt}], cliente_gemini_b, "gemini_b", lang)
-    if t: return t
-    if GROQ_KEY:
+    def g_a(): return gemini_gen([{"text": prompt}], cliente_gemini_a, "gemini_a", lang)
+    def g_b(): return gemini_gen([{"text": prompt}], cliente_gemini_b, "gemini_b", lang)
+    def g_groq():
+        if not GROQ_KEY: return None
         for mod in MODELOS_GROQ:
             try:
                 r = requests.post("https://api.groq.com/openai/v1/chat/completions",
                     headers={"Authorization": "Bearer " + GROQ_KEY},
-                    json={"model": mod, "messages": [
-                        {"role": "system", "content": SYSTEM},
-                        {"role": "user", "content": prompt}]}, timeout=30)
+                    json={"model": mod, "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]}, timeout=30)
                 r.raise_for_status()
-                contar("groq")
                 return r.json()["choices"][0]["message"]["content"]
             except Exception as e:
                 fallo(f"groq/{mod}: {str(e)[:60]}")
-    if OR_KEY:
+        return None
+    def g_or():
+        if not OR_KEY: return None
         for mod in ["deepseek/deepseek-v4-flash", "meta-llama/llama-3.3-70b-instruct:free", "google/gemini-2.0-flash-001"]:
             try:
                 r = requests.post("https://openrouter.ai/api/v1/chat/completions",
                     headers={"Authorization": "Bearer " + OR_KEY},
-                    json={"model": mod, "messages": [
-                        {"role": "system", "content": SYSTEM},
-                        {"role": "user", "content": prompt}]}, timeout=30)
+                    json={"model": mod, "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]}, timeout=30)
                 r.raise_for_status()
                 return r.json()["choices"][0]["message"]["content"]
             except Exception as e:
                 fallo(f"openrouter/{mod}: {str(e)[:60]}")
+        return None
+    def g_tr():
+        if not TR_KEY: return None
+        for mod in TR_MODELOS:
+            try:
+                r = requests.post(TR_URL,
+                    headers={"Authorization": "Bearer " + TR_KEY},
+                    json={"model": mod, "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]}, timeout=30)
+                r.raise_for_status()
+                return r.json()["choices"][0]["message"]["content"]
+            except Exception as e:
+                fallo(f"tokenrouter/{mod}: {str(e)[:60]}")
+        return None
+    def g_hf():
+        if not HF_KEY: return None
+        for mod in HF_MODELOS:
+            try:
+                r = requests.post(HF_URL,
+                    headers={"Authorization": "Bearer " + HF_KEY},
+                    json={"model": mod, "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]}, timeout=30)
+                r.raise_for_status()
+                return r.json()["choices"][0]["message"]["content"]
+            except Exception as e:
+                fallo(f"huggingface/{mod}: {str(e)[:60]}")
+        return None
+    funcs = {"gemini_a": g_a, "gemini_b": g_b, "groq": g_groq, "openrouter": g_or, "tokenrouter": g_tr, "huggingface": g_hf}
+    for nombre in orden_proveedores():
+        t = funcs[nombre]()
+        prov_stats(nombre, bool(t))
+        if t: return t
     return None
 
 def generar_foto(b64, mime, lang):
@@ -300,6 +344,7 @@ def api_text():
     d = request.get_json(force=True)
     t = d.get("texto", "")
     n, tel = datos_pac(d.get("pac", ""))
+    u = USU.setdefault(tel or n or "anon", {"msgs":0,"fotos":0,"voces":0}); u["msgs"] += 1
     lp = d.get("lang", "auto")
     lang = lp if lp in ("es", "en") else detectar_idioma(t)
     return finalizar(generar_texto(contexto(PAC.get(tel or n)) + "\nEl paciente escribe: " + t + sufijo_lang(lang), lang), "web", "texto", t, tel or n, n, lang)
@@ -310,6 +355,7 @@ def api_foto():
     contar("web"); contar("fotos")
     f = request.files.get("foto")
     n, tel = datos_pac(request.form.get("pac", ""))
+    u = USU.setdefault(tel or n or "anon", {"msgs":0,"fotos":0,"voces":0}); u["fotos"] += 1
     lang = request.form.get("lang", "es")
     b64 = base64.b64encode(f.read()).decode()
     return finalizar(generar_foto(b64, f.mimetype or "image/jpeg", lang), "web", "foto", "(foto)", tel or n, n, lang)
@@ -319,12 +365,13 @@ def api_voz():
     contar("web"); contar("voces")
     f = request.files.get("audio")
     n, tel = datos_pac(request.form.get("pac", ""))
+    u = USU.setdefault(tel or n or "anon", {"msgs":0,"fotos":0,"voces":0}); u["voces"] += 1
     lang = request.form.get("lang", "es")
     return finalizar(generar_voz(f.read(), f.mimetype or "audio/webm", lang), "web", "voz", "(voz)", tel or n, n, lang)
 
 @app.route("/stats")
 def stats():
-    return jsonify({"uso": USO, "errores": ERRORES, "pacientes": list(PAC.keys()), "bitacora": BITACORA[-50:]})
+    return jsonify({"uso": USO, "proveedores": PROV, "usuarios": USU, "errores": ERRORES, "pacientes": list(PAC.keys()), "bitacora": BITACORA[-50:]})
 
 @app.route("/webhook", methods=["GET"])
 def verificar():
