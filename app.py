@@ -37,6 +37,68 @@ def orden_proveedores():
 META_TOKEN = os.getenv("META_TOKEN")
 META_PHONE_ID = os.getenv("META_PHONE_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "SaludMexicali2026")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+
+def _sb_headers():
+    return {"apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY,
+            "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"}
+
+def sb_guardar_paciente(pid, nombre):
+    if not (SUPABASE_URL and SUPABASE_KEY and pid): return
+    try:
+        requests.post(SUPABASE_URL + "/rest/v1/pacientes", headers=_sb_headers(),
+                      json={"id": pid, "nombre": nombre or ""}, timeout=8)
+    except Exception as e:
+        fallo(f"supabase paciente: {str(e)[:60]}")
+
+def sb_guardar_lectura(pid, tipo, valores, triage, nota, canal):
+    if not (SUPABASE_URL and SUPABASE_KEY and pid): return
+    try:
+        requests.post(SUPABASE_URL + "/rest/v1/lecturas", headers=_sb_headers(),
+                      json={"pac_id": pid, "tipo": tipo, "ta": valores.get("ta", ""),
+                            "pulso": valores.get("pulso", ""), "glucosa": valores.get("glucosa", ""),
+                            "triage": triage, "nota": (nota or "")[:200], "canal": canal}, timeout=8)
+    except Exception as e:
+        fallo(f"supabase lectura: {str(e)[:60]}")
+
+def sb_expediente(pid):
+    if not (SUPABASE_URL and SUPABASE_KEY and pid): return ""
+    try:
+        r = requests.get(SUPABASE_URL + "/rest/v1/pacientes", headers=_sb_headers(),
+                         params={"id": "eq." + pid, "select": "nombre,medicamentos,rutina"}, timeout=6)
+        p = (r.json() or [{}])[0] if r.ok else {}
+        r2 = requests.get(SUPABASE_URL + "/rest/v1/lecturas", headers=_sb_headers(),
+                          params={"pac_id": "eq." + pid, "order": "ts.desc", "limit": 3,
+                                  "select": "ta,glucosa,triage"}, timeout=6)
+        lect = r2.json() if r2.ok else []
+        r3 = requests.get(SUPABASE_URL + "/rest/v1/citas", headers=_sb_headers(),
+                          params={"pac_id": "eq." + pid, "recordado": "eq.false",
+                                  "order": "fecha.asc", "limit": 1,
+                                  "select": "fecha,hora,lugar,doctor,notas"}, timeout=6)
+        cit = (r.json() or [])[:1] if False else (r3.json() or [])[:1] if r3.ok else []
+        partes = []
+        if p.get("nombre"): partes.append("nombre=" + p["nombre"])
+        if p.get("medicamentos"): partes.append("medicamentos=" + p["medicamentos"])
+        if p.get("rutina"): partes.append("rutina=" + p["rutina"])
+        if lect:
+            ls = []
+            for l in lect:
+                ped = []
+                if l.get("ta"): ped.append("TA " + l["ta"])
+                if l.get("glucosa"): ped.append("glucosa " + l["glucosa"])
+                if l.get("triage"): ped.append(l["triage"])
+                ls.append(" ".join(ped))
+            partes.append("ultimas lecturas: " + "; ".join(ls))
+        if cit:
+            c = cit[0]
+            partes.append("PROXIMA CITA: " + str(c.get("fecha", "")) + " " + c.get("hora", "") +
+                          " en " + c.get("lugar", "") + " con " + c.get("doctor", "") +
+                          ((" llevar: " + c.get("notas", "")) if c.get("notas") else ""))
+        return ("\nEXPEDIENTE DEL PACIENTE: " + " | ".join(partes)) if partes else ""
+    except Exception as e:
+        fallo(f"supabase expediente: {str(e)[:60]}")
+        return ""
 
 def _mk_client(k):
     if not k: return None
@@ -110,14 +172,18 @@ def registrar(pid, nombre):
     if pid:
         p = PAC.setdefault(pid, {"nombre": nombre or "", "hist": []})
         if nombre: p["nombre"] = nombre
+        sb_guardar_paciente(pid, nombre or p["nombre"])
         return p
     return None
 
-def contexto(p):
-    if not p or not p.get("nombre"): return ""
-    hist = " | ".join([h for h in p["hist"][-5:]])
-    return ("\nDATOS DEL PACIENTE: nombre=" + p["nombre"] + ". Su historia reciente: " + hist +
-            "\nUsa su nombre al hablarle.")
+def contexto(pid):
+    partes = []
+    exp = sb_expediente(pid)
+    if exp: partes.append(exp)
+    p = PAC.get(pid)
+    if p and p.get("hist"):
+        partes.append("Historia de hoy: " + " | ".join(p["hist"][-3:]))
+    return ("\n" + "\n".join(partes) + "\nUsa su nombre al hablarle.") if partes else ""
 
 def recordar(p, linea):
     if p:
@@ -290,6 +356,7 @@ def finalizar(txt_crudo, canal, tipo, usuario, pid, nombre, lang):
         return jsonify({"texto": "No te escuche bien, intentalo otra vez por favor. / I didn't hear you well, please try again.", "triage": "normal", "valores": {}, "lang": lang})
     texto, triage, valores = limpiar(txt_crudo)
     recordar(p, tipo + " " + usuario + " -> " + triage + " " + json.dumps(valores))
+    sb_guardar_lectura(pid, tipo, valores, triage, usuario, canal)
     BITACORA.append({"ts": time.strftime("%Y-%m-%d %H:%M"), "canal": canal, "pac": pid,
                      "usuario": usuario, "bot": texto, "triage": triage, "valores": valores})
     return jsonify({"texto": texto, "triage": triage, "valores": valores, "lang": lang})
@@ -347,7 +414,7 @@ def api_text():
     u = USU.setdefault(tel or n or "anon", {"msgs":0,"fotos":0,"voces":0}); u["msgs"] += 1
     lp = d.get("lang", "auto")
     lang = lp if lp in ("es", "en") else detectar_idioma(t)
-    return finalizar(generar_texto(contexto(PAC.get(tel or n)) + "\nEl paciente escribe: " + t + sufijo_lang(lang), lang), "web", "texto", t, tel or n, n, lang)
+    return finalizar(generar_texto(contexto(tel or n) + "\nEl paciente escribe: " + t + sufijo_lang(lang), lang), "web", "texto", t, tel or n, n, lang)
 
 
 @app.route("/api/foto", methods=["POST"])
@@ -373,6 +440,27 @@ def api_voz():
 def stats():
     return jsonify({"uso": USO, "proveedores": PROV, "usuarios": USU, "errores": ERRORES, "pacientes": list(PAC.keys()), "bitacora": BITACORA[-50:]})
 
+@app.route("/api/recordatorios")
+def recordatorios():
+    pid = request.args.get("pac", "")
+    out = []
+    if SUPABASE_URL and SUPABASE_KEY and pid:
+        try:
+            r = requests.get(SUPABASE_URL + "/rest/v1/citas", headers=_sb_headers(),
+                             params={"pac_id": "eq." + pid, "recordado": "eq.false",
+                                     "order": "fecha.asc", "limit": 3,
+                                     "select": "id,fecha,hora,lugar,doctor,notas"}, timeout=6)
+            for c in (r.json() if r.ok else []):
+                out.append({"id": c["id"], "texto": ("📅 Le recuerdo su cita del " + str(c.get("fecha", "")) +
+                            " a las " + c.get("hora", "") + " en " + c.get("lugar", "") +
+                            " con " + c.get("doctor", "") + ". " + c.get("notas", "")).strip()})
+            for o in out:
+                requests.patch(SUPABASE_URL + "/rest/v1/citas?id=eq." + str(o["id"]),
+                               headers=_sb_headers(), json={"recordado": True}, timeout=6)
+        except Exception as e:
+            fallo(f"supabase recordatorios: {str(e)[:60]}")
+    return jsonify({"items": out})
+
 @app.route("/webhook", methods=["GET"])
 def verificar():
     if request.args.get("hub.verify_token") == VERIFY_TOKEN:
@@ -394,7 +482,7 @@ def recibir():
         p = registrar(de, "")
         lang = "es"
         if msg["type"] == "text":
-            crudo = generar_texto(contexto(p) + "\nEl paciente escribe por WhatsApp: " + msg["text"]["body"] + sufijo_lang(lang), lang)
+            crudo = generar_texto(contexto(de) + "\nEl paciente escribe por WhatsApp: " + msg["text"]["body"] + sufijo_lang(lang), lang)
         elif msg["type"] == "image":
             mid = msg["image"]["id"]
             r1 = requests.get("https://graph.facebook.com/v21.0/" + mid, headers={"Authorization": "Bearer " + str(META_TOKEN)})
@@ -512,6 +600,8 @@ let evtI=null;
 window.addEventListener('beforeinstallprompt',e=>{evtI=e;document.getElementById('inst').style.display='block'});
 document.getElementById('inst').onclick=async()=>{if(evtI){evtI.prompt();document.getElementById('inst').style.display='none'}};
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js');
+(function(){const d0=JSON.parse(pac()||'{}');const id=d0.t||d0.n||'';if(!id)return;
+ fetch('/api/recordatorios?pac='+encodeURIComponent(id)).then(r=>r.json()).then(d=>{(d.items||[]).forEach(x=>pinta(false,x.texto))}).catch(()=>{})})();
 pinta(false,'Hola, soy su asistente de salud. ❤️<br><br>Yo le puedo ayudar si me manda:<br>• Su presión arterial<br>• Su glucosa<br>• Una foto de su aparato<br>• O una nota de voz<br><br>¿Cómo se siente hoy?');
 </script>
 </body>
