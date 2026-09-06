@@ -182,10 +182,10 @@ def fallo(msg):
 SYSTEM = ("Responde SIEMPRE con frases completas (nunca cortadas a la mitad), maximo 3 frases cortas, separadas por renglones, con palabras sencillas para adultos mayores.\n"
 "Si el paciente menciona medicamentos, dosis u horarios, agrega al final una linea: MEDS: nombre=HH:MM,HH:MM; nombre2=HH:MM\n"
 "Si menciona a que hora se mide la presion o la glucosa, agrega: RUTINA: presion=HH:MM; glucosa=HH:MM\n"
-"Si el EXPEDIENTE aparece vacio (paciente nuevo), presentate con carino y preguntale que medicamentos toma con sus horarios y a que hora se mide la presion.\n"
+"Si el EXPEDIENTE aparece vacio (paciente nuevo), presentate con cariño y preguntale que medicamentos toma con sus horarios y a que hora se mide la presion.\n"
 "Eres 'Salud Mexicali', asistente calido de salud para adultos mayores con hipertension y diabetes.\n"
 "IDIOMA: responde SIEMPRE en el idioma del paciente (espanol o ingles).\n"
-"TRATO: si conoces el nombre del paciente (ver DATOS DEL PACIENTE), dirigete a el por su nombre con respeto y calidez (ej. 'don Antonio', 'senora Maria'); NUNCA uses 'corazon' ni 'carino' si ya sabes su nombre. Si no lo conoces, usa un trato amable neutro.\n"
+"TRATO: si conoces el nombre del paciente (ver DATOS DEL PACIENTE), dirigete a el por su nombre con respeto y calidez (ej. 'don Antonio', 'senora Maria'); NUNCA uses 'corazon' ni 'cariño' si ya sabes su nombre. Si no lo conoces, usa un trato amable neutro.\n"
 "Habla con frases cortas, claras y carinosas.\n"
 "Criterios (adulto mayor): normal: TA hasta 139/89 y glucosa 70-180; moderado: TA 140-159/90-99 o glucosa 181-250; critico: TA 160 o mas, o glucosa mayor a 250 o menor a 70, o sintomas como dolor de pecho, confusion o vision borrosa.\n"
 "Si es critico: pide con carino que se vuelva a medir en 5 minutos sentado y avisa que notificaras a su familia.\n"
@@ -572,7 +572,7 @@ def recordatorios():
             def es_med(m): return not any(k in m.lower() for k in ["presion", "presión", "glucosa", "chequeo", "medicion", "medición"])
             def frase(t):
                 if es_med(t["medicamento"]):
-                    return "su " + t["medicamento"] + " de las " + t["hora"] + ". ¿Me cuenta si ya lo tomo? Lo anito con carino."
+                    return "su " + t["medicamento"] + " de las " + t["hora"] + ". ¿Me cuenta si ya lo tomo? Lo anoto con cariño."
                 return "su chequeo de las " + t["hora"] + ". ¿Ya se midio? Mandeme el numerito y lo guardo en su bitacora."
             lineas = []
             g_ayer = [t for t in tomas if (str(t["id"]), ayer) not in done]
@@ -592,7 +592,7 @@ def recordatorios():
                 lineas.append("• 📅 Su proxima cita: " + str(c.get("fecha", "")) + " a las " + c.get("hora", "") + " en " + c.get("lugar", "") + " con " + c.get("doctor", "") + ". " + c.get("notas", ""))
                 requests.patch(SUPABASE_URL + "/rest/v1/citas?id=eq." + str(c["id"]), headers=_sb_headers(), json={"recordado": True}, timeout=6)
             if lineas:
-                aviso = "🌞 Hola" + ((" " + nombre) if nombre else "") + ". Le comparto su guia con carino:\n" + "\n".join(lineas) + "\nCuando guste me cuenta y lo anito en su bitacora. 💙"
+                aviso = "🌞 Hola" + ((" " + nombre) if nombre else "") + ". Le comparto su guia con carino:\n" + "\n".join(lineas) + "\nCuando guste me cuenta y lo anoto en su bitacora. 💙"
                 out.append({"id": -1, "texto": aviso, "audio": tts(texto_voz(aviso)) or ""})
         except Exception as e:
             fallo(f"supabase recordatorios: {str(e)[:60]}")
