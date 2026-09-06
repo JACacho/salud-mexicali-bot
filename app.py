@@ -501,6 +501,25 @@ def api_voz():
 def stats():
     return jsonify({"uso": USO, "proveedores": PROV, "usuarios": USU, "errores": ERRORES, "pacientes": list(PAC.keys()), "bitacora": BITACORA[-50:]})
 
+@app.route("/api/citas")
+def api_citas():
+    pid = request.args.get("pac", "")
+    mes = request.args.get("mes", "")
+    items = []
+    if SUPABASE_URL and SUPABASE_KEY and pid and mes:
+        try:
+            y, m, _ = mes.split("-")
+            nm = int(m) + 1 if int(m) < 12 else 1
+            ny = int(y) if int(m) < 12 else int(y) + 1
+            sig = f"{ny}-{nm:02d}-01"
+            r = requests.get(SUPABASE_URL + "/rest/v1/citas", headers=_sb_headers(),
+                             params=[("pac_id", "eq." + pid), ("fecha", "gte." + mes),
+                                     ("fecha", "lt." + sig), ("select", "fecha,hora,lugar,doctor")], timeout=6)
+            items = r.json() if r.ok else []
+        except Exception as e:
+            fallo(f"supabase citas cal: {str(e)[:60]}")
+    return jsonify({"items": items})
+
 @app.route("/api/recordatorios")
 def recordatorios():
     pid = request.args.get("pac", "")
@@ -603,6 +622,11 @@ HTML = """<!DOCTYPE html>
  #inst{display:none;margin:8px auto;background:#e8f5e9;border:2px solid #4c8;padding:8px 16px;font-size:.9em;border-radius:12px}
  #ficha{margin:10px auto;background:#fff;padding:14px;border-radius:14px;box-shadow:0 1px 6px rgba(0,0,0,.2);text-align:center}
  #ficha input{font-size:1em;margin:6px;padding:10px;border-radius:10px;border:2px solid #bbc;display:block;width:80%;margin-left:auto;margin-right:auto}
+body.alto{background:#000}
+body.alto header{background:#000;border-bottom:2px solid #ffeb3b}
+body.alto .msg.bot{background:#111;color:#ffeb3b;border:1px solid #ffeb3b}
+body.alto .msg.user{background:#333;color:#fff}
+body.alto #chat{background:#000}
 </style>
 </head>
 <body>
@@ -613,6 +637,12 @@ HTML = """<!DOCTYPE html>
  </div>
 </header>
 <button id="inst">📲 Instalar como app</button>
+<button onclick="abreCal()" style="margin:4px;padding:8px 14px;border-radius:10px;border:1px solid #0f274d;background:#fff;font-size:1em">📅 Mi calendario</button>
+<button onclick="document.body.classList.toggle('alto')" style="margin:4px;padding:8px 14px;border-radius:10px;border:1px solid #0f274d;background:#fff;font-size:1em">🔲 Contraste</button>
+<div id="calpanel" style="display:none;max-width:420px;margin:8px auto;background:#fff;border-radius:12px;padding:10px">
+<div style="text-align:center"><button onclick="calMes(-1)" style="font-size:1.1em">⬅️</button> <b id="caltit"></b> <button onclick="calMes(1)" style="font-size:1.1em">➡️</button></div>
+<div id="calbody"></div>
+</div>
 <div id="chat"></div>
 <div id="ficha" style="display:none">
  <b>Presentate para que te recuerde:</b>
@@ -633,6 +663,20 @@ const pac=()=>localStorage.getItem('pac')||'';
 let langPref='auto',fontScale=1,thinkT=null,thinkS=0,rec=null,chunks=[];
 function aplicarFuente(){document.documentElement.style.setProperty('--fs',(20*fontScale)+'px')}
 function pinta(q,t,cls){const d=document.createElement('div');d.className='b '+(q?'yo':'bot')+(cls||'');d.innerHTML=t;chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d}
+function leer(t){try{const u=new SpeechSynthesisUtterance(t.replace(/<[^>]*>/g,' '));u.lang='es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
+function pintaAviso(t){pinta(false,t+'<br><button onclick="leer(this.parentNode.innerText)" style="margin-top:6px;padding:8px 16px;font-size:1.05em;border-radius:10px;border:none;background:#0f274d;color:#fff">🔊 Escuchar</button>');leer(t);}
+let calY=0,calM=0;
+function abreCal(){const p=document.getElementById('calpanel');p.style.display=p.style.display==='none'?'block':'none';if(p.style.display==='block'&&!calY){const h=new Date();calY=h.getFullYear();calM=h.getMonth();}pintaCal();}
+function calMes(d){calM+=d;if(calM<0){calM=11;calY--}if(calM>11){calM=0;calY++}pintaCal();}
+function pintaCal(){const d0=JSON.parse(pac()||'{}');const id=d0.t||d0.n||'';const mes=calY+'-'+String(calM+1).padStart(2,'0')+'-01';
+ fetch('/api/citas?pac='+encodeURIComponent(id)+'&mes='+mes).then(r=>r.json()).then(d=>{
+    const dias={};(d.items||[]).forEach(c=>{const dd=Number(c.fecha.slice(8,10));dias[dd]=(dias[dd]||'')+'🩺';});
+    document.getElementById('caltit').textContent=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'][calM]+' '+calY;
+    const prim=new Date(calY,calM,1);const nd=new Date(calY,calM+1,0).getDate();let h='<table style="width:100%;text-align:center;font-size:1.15em;border-collapse:collapse"><tr>';
+    ['D','L','M','M','J','V','S'].forEach(x=>h+='<th>'+x+'</th>');h+='</tr><tr>';
+    for(let i=0;i<prim.getDay();i++)h+='<td></td>';
+    for(let dd=1;dd<=nd;dd++){h+='<td style="padding:8px;border:1px solid #ccc;'+(dias[dd]?'background:#ffd6d6;font-weight:bold':'')+'">'+dd+(dias[dd]||'')+'</td>';if((prim.getDay()+dd)%7===0)h+='</tr><tr>';}
+    h+='</tr></table>';document.getElementById('calbody').innerHTML=h;}).catch(()=>{});}
 function pensando(){quitando();pinta(false,'<span class="dots"><i></i><i></i><i></i></span> Trabajando en tu respuesta… <span id="tsec">0</span> s');thinkS=0;thinkT=setInterval(()=>{thinkS++;const e=document.getElementById('tsec');if(e)e.textContent=thinkS},1000)}
 function quitando(){if(thinkT){clearInterval(thinkT);thinkT=null}}
 function agregaAudio(el,texto,lang){fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({texto:texto,lang:lang})}).then(r=>r.json()).then(a=>{if(a.audio){const au=document.createElement('audio');au.controls=true;au.src='data:'+(a.mime||'audio/mpeg')+';base64,'+a.audio;el.appendChild(au);chat.scrollTop=chat.scrollHeight}}).catch(()=>{})}
@@ -674,7 +718,7 @@ window.addEventListener('beforeinstallprompt',e=>{evtI=e;document.getElementById
 document.getElementById('inst').onclick=async()=>{if(evtI){evtI.prompt();document.getElementById('inst').style.display='none'}};
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js');
 (function(){const d0=JSON.parse(pac()||'{}');const id=d0.t||d0.n||'';if(!id)return;
- fetch('/api/recordatorios?pac='+encodeURIComponent(id)).then(r=>r.json()).then(d=>{(d.items||[]).forEach(x=>pinta(false,x.texto))}).catch(()=>{})})();
+ fetch('/api/recordatorios?pac='+encodeURIComponent(id)).then(r=>r.json()).then(d=>{(d.items||[]).forEach(x=>pintaAviso(x.texto))}).catch(()=>{})})();
 pinta(false,'Hola, soy su asistente de salud. ❤️<br><br>Yo le puedo ayudar si me manda:<br>• Su presión arterial<br>• Su glucosa<br>• Una foto de su aparato<br>• O una nota de voz<br><br>¿Cómo se siente hoy?');
 </script>
 </body>
