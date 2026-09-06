@@ -528,6 +528,51 @@ def api_voz():
     lang = request.form.get("lang", "es")
     return finalizar(generar_voz(f.read(), f.mimetype or "audio/webm", lang), "web", "voz", "(voz)", tel or n, n, lang)
 
+@app.route("/api/registro", methods=["POST"])
+def api_registro():
+    d = request.get_json(force=True)
+    pid = (d.get("tel") or d.get("nombre") or "").strip()
+    if not pid: return jsonify({"ok": False})
+    try:
+        requests.post(SUPABASE_URL + "/rest/v1/pacientes", headers=_sb_headers(),
+                      json={"id": pid, "nombre": d.get("nombre", ""), "edad": d.get("edad") or None,
+                            "sexo": d.get("sexo", ""), "diagnostico": d.get("diagnostico", ""),
+                            "medicamentos": d.get("medicamentos", ""), "medico": d.get("medico", ""),
+                            "toma_presion": bool(d.get("toma_presion", True)),
+                            "mide_glucosa": bool(d.get("mide_glucosa", True)),
+                            "cuidador_nombre": d.get("cuidador_nombre", ""),
+                            "cuidador_tel": d.get("cuidador_tel", ""),
+                            "cuidador_parentesco": d.get("cuidador_parentesco", "")}, timeout=8)
+        tomas = d.get("tomas") or []
+        if tomas:
+            requests.delete(SUPABASE_URL + "/rest/v1/tomas", headers=_sb_headers(),
+                            params={"pac_id": "eq." + pid}, timeout=8)
+            for t in tomas:
+                for h in t.get("horas", []):
+                    requests.post(SUPABASE_URL + "/rest/v1/tomas", headers=_sb_headers(),
+                                  json={"pac_id": pid, "medicamento": t.get("nombre", ""), "hora": h}, timeout=8)
+        registrar(pid, d.get("nombre", ""))
+        return jsonify({"ok": True})
+    except Exception as e:
+        fallo(f"registro: {str(e)[:60]}")
+        return jsonify({"ok": False})
+
+@app.route("/api/expediente")
+def api_expediente():
+    pid = request.args.get("pac", "")
+    out = {"paciente": {}, "tomas": []}
+    if SUPABASE_URL and SUPABASE_KEY and pid:
+        try:
+            r = requests.get(SUPABASE_URL + "/rest/v1/pacientes", headers=_sb_headers(),
+                             params={"id": "eq." + pid}, timeout=6)
+            out["paciente"] = (r.json() or [{}])[0] if r.ok else {}
+            r2 = requests.get(SUPABASE_URL + "/rest/v1/tomas", headers=_sb_headers(),
+                              params={"pac_id": "eq." + pid, "activo": "eq.true", "select": "medicamento,hora", "order": "hora.asc"}, timeout=6)
+            out["tomas"] = r2.json() if r2.ok else []
+        except Exception as e:
+            fallo(f"expediente: {str(e)[:60]}")
+    return jsonify(out)
+
 @app.route("/stats")
 def stats():
     return jsonify({"uso": USO, "proveedores": PROV, "usuarios": USU, "errores": ERRORES, "pacientes": list(PAC.keys()), "bitacora": BITACORA[-50:]})
@@ -682,15 +727,27 @@ body.alto #chat{background:#000}
   <button id="Lauto" class="on">AUTO</button><button id="Les">ES</button><button id="Len">EN</button>
   <button id="fmas">A+</button><button id="fmenos">A−</button>
  <button onclick="document.body.classList.toggle('alto')" style="margin-left:6px;padding:2px 10px;border-radius:12px;border:1px solid #fff;background:transparent;color:#fff;font-size:.8em">🔲</button>
+ <button onclick="abreFicha(true)" style="margin-left:6px;padding:2px 10px;border-radius:12px;border:1px solid #fff;background:transparent;color:#fff;font-size:.8em">✏️ Mis datos</button>
  </div>
 </header>
 <button id="inst">📲 Instalar como app</button>
 <div id="chat"></div>
-<div id="ficha" style="display:none">
- <b>Presentate para que te recuerde:</b>
- <input id="fnom" placeholder="Tu nombre">
- <input id="ftel" placeholder="Tu telefono (opcional)">
- <button id="fok" style="font-size:1em;padding:8px 20px;border-radius:10px;border:none;background:#0f274d;color:#fff">Guardar</button>
+<div id="ficha" style="display:none;max-width:460px;margin:10px auto;padding:14px;background:#fff;border-radius:12px;max-height:70vh;overflow:auto">
+<h3 style="margin:0 0 8px">📋 Hoja de ingreso</h3>
+<label>Nombre completo*<br><input id="fnom" style="width:100%;padding:8px;font-size:1em"></label><br>
+<label>Teléfono*<br><input id="ftel" style="width:100%;padding:8px;font-size:1em"></label><br>
+<label>Edad<br><input id="fedad" type="number" style="width:100%;padding:8px;font-size:1em"></label><br>
+<label>Sexo<br><select id="fsexo" style="width:100%;padding:8px;font-size:1em"><option value="">—</option><option>Femenino</option><option>Masculino</option></select></label><br>
+<label>Diagnóstico (ej. hipertensión, diabetes)<br><input id="fdiag" style="width:100%;padding:8px;font-size:1em"></label><br>
+<label>¿Se checa la presión? <input id="ftapres" type="checkbox" checked>  ¿Se mide la glucosa? <input id="fgluc" type="checkbox" checked></label><br>
+<label>Médico(s)<br><input id="fmed" style="width:100%;padding:8px;font-size:1em"></label><br>
+<b>Medicamentos y horarios</b>
+<div id="ftomas"></div>
+<button onclick="agregaToma('','')" style="margin:4px 0;padding:6px 12px;border-radius:8px;border:1px solid #0f274d;background:#fff">➕ Agregar medicamento</button><br>
+<label>👤 Cuidador: nombre<br><input id="fcuinom" style="width:100%;padding:8px;font-size:1em"></label><br>
+<label>Teléfono del cuidador<br><input id="fcuitel" style="width:100%;padding:8px;font-size:1em"></label><br>
+<label>Parentesco<br><input id="fcuipar" style="width:100%;padding:8px;font-size:1em"></label><br>
+<button id="fok" style="margin-top:8px;padding:10px 20px;font-size:1.1em;border:none;border-radius:10px;background:#0f274d;color:#fff">💾 Guardar mi expediente</button>
 </div>
 <div id="calpanel"><div style="text-align:center"><button onclick="calMes(-1)">⬅️</button> <b id="caltit"></b> <button onclick="calMes(1)">➡️</button></div><div id="calbody"></div></div>
 <div id="bar">
@@ -729,14 +786,19 @@ function botMsg(d){const t=(d.texto||'').replace(/&/g,'&amp;').replace(/</g,'&lt
  if(d.texto)agregaAudio(el,d.texto,d.lang||'es')}
 async function api(url,body){pensando();
  try{const r=await fetch(url,{method:'POST',body});
-  if(!r.ok){quitando();chat.lastChild.remove();pinta(false,'⚠️ Error '+r.status+'. Abre /test para ver por que.');return}
-  const d=await r.json();quitando();chat.lastChild.remove();botMsg(d)}
+ if(!r.ok){quitando();chat.lastChild.remove();pinta(false,'⚠️ Error '+r.status+'. Abre /test para ver por que.');return}
+    const d=await r.json();quitando();chat.lastChild.remove();botMsg(d)}
  catch(e){quitando();chat.lastChild.remove();pinta(false,'⚠️ Sin conexion con el servidor: '+e)}}
+function agregaToma(nom, hors){const d=document.createElement('div');d.style.margin='4px 0';d.innerHTML='<input placeholder="Medicamento (ej. Losartán 50mg)" style="width:60%;padding:6px" value="'+nom+'"> <input placeholder="Horas: 08:00,20:00" style="width:30%;padding:6px" value="'+hors+'">';document.getElementById('ftomas').appendChild(d);}
+function abreFicha(pref){const f=document.getElementById('ficha');f.style.display='block';if(!pref)return;const d0=JSON.parse(pac()||'{}');const id=d0.t||d0.n||'';if(!id)return;
+ fetch('/api/expediente?pac='+encodeURIComponent(id)).then(r=>r.json()).then(d=>{const p=d.paciente||{};
+    document.getElementById('fnom').value=p.nombre||'';document.getElementById('ftel').value=id;document.getElementById('fedad').value=p.edad||'';document.getElementById('fsexo').value=p.sexo||'';document.getElementById('fdiag').value=p.diagnostico||'';document.getElementById('ftapres').checked=p.toma_presion!==false;document.getElementById('fgluc').checked=p.mide_glucosa!==false;document.getElementById('fmed').value=p.medico||'';document.getElementById('fcuinom').value=p.cuidador_nombre||'';document.getElementById('fcuitel').value=p.cuidador_tel||'';document.getElementById('fcuipar').value=p.cuidador_parentesco||'';
+    document.getElementById('ftomas').innerHTML='';const g={};(d.tomas||[]).forEach(t=>{g[t.medicamento]=g[t.medicamento]||[];g[t.medicamento].push(t.hora);});Object.keys(g).forEach(k=>agregaToma(k,g[k].join(',')));});}
 if(!pac()){document.getElementById('ficha').style.display='block'}
-document.getElementById('fok').onclick=()=>{const n=document.getElementById('fnom').value.trim()||'';
- localStorage.setItem('pac',JSON.stringify({n:n,t:document.getElementById('ftel').value.trim()}));
- document.getElementById('ficha').style.display='none';
- pinta(false,n?('Gracias, '+n+'. Ya me acuerdo de ti. ❤️'):'Listo. ❤️')}
+document.getElementById('fok').onclick=()=>{const nom=document.getElementById('fnom').value.trim();const tel=document.getElementById('ftel').value.trim();if(!nom||!tel){alert('Por favor nombre y telefono, gracias.');return;}
+ const tomas=[];document.querySelectorAll('#ftomas div').forEach(d=>{const i=d.querySelectorAll('input');const n=i[0].value.trim();const hs=i[1].value.split(',').map(x=>x.trim()).filter(x=>x);if(n&&hs.length)tomas.push({nombre:n,horas:hs});});
+ const body={nombre:nom,tel:tel,edad:document.getElementById('fedad').value,sexo:document.getElementById('fsexo').value,diagnostico:document.getElementById('fdiag').value,toma_presion:document.getElementById('ftapres').checked,mide_glucosa:document.getElementById('fgluc').checked,medico:document.getElementById('fmed').value,cuidador_nombre:document.getElementById('fcuinom').value,cuidador_tel:document.getElementById('fcuitel').value,cuidador_parentesco:document.getElementById('fcuipar').value,tomas:tomas,medicamentos:tomas.map(t=>t.nombre+' '+t.horas.join(',')).join('; ')};
+ fetch('/api/registro',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(()=>{localStorage.setItem('pac',JSON.stringify({n:nom,t:tel}));document.getElementById('ficha').style.display='none';pintaNombre();initCal();pinta(false,'Gracias, '+nom+'. Su expediente queda guardado con carino. 💙');});};
 document.getElementById('txt').onkeydown=e=>{if(e.key==='Enter')document.getElementById('benv').click()};
 document.getElementById('benv').onclick=()=>{const t=document.getElementById('txt').value.trim();if(!t)return;
  document.getElementById('txt').value='';pinta(true,t);
