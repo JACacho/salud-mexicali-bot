@@ -97,6 +97,20 @@ def sb_confirmar_toma(pid, texto):
     except Exception as e:
         fallo(f"supabase confirmar: {str(e)[:60]}")
 
+def sb_confirmar_medicion(pid):
+    if not (SUPABASE_URL and SUPABASE_KEY and pid): return
+    try:
+        r = requests.get(SUPABASE_URL + "/rest/v1/tomas", headers=_sb_headers(),
+                         params={"pac_id": "eq." + pid, "activo": "eq.true", "select": "id,medicamento"}, timeout=6)
+        tomas = r.json() if r.ok else []
+        hoy = time.strftime("%Y-%m-%d")
+        for t in tomas:
+            if any(k in t["medicamento"].lower() for k in ["presion", "presión", "glucosa", "chequeo", "medicion", "medición"]):
+                requests.post(SUPABASE_URL + "/rest/v1/tomas_ok", headers=_sb_headers(),
+                              json={"pac_id": pid, "toma_id": t["id"], "fecha": hoy}, timeout=6)
+    except Exception as e:
+        fallo(f"supabase confirmar medicion: {str(e)[:60]}")
+
 def sb_expediente(pid):
     if not (SUPABASE_URL and SUPABASE_KEY and pid): return ""
     try:
@@ -414,6 +428,8 @@ def finalizar(txt_crudo, canal, tipo, usuario, pid, nombre, lang):
     texto, triage, valores, meds, rut = limpiar(txt_crudo)
     recordar(p, tipo + " " + usuario + " -> " + triage + " " + json.dumps(valores))
     sb_guardar_lectura(pid, tipo, valores, triage, usuario, canal)
+    if valores.get("ta") or valores.get("glucosa"):
+        sb_confirmar_medicion(pid)
     sb_guardar_tomas(pid, meds)
     sb_guardar_rutina(pid, rut)
     BITACORA.append({"ts": time.strftime("%Y-%m-%d %H:%M"), "canal": canal, "pac": pid,
@@ -524,34 +540,47 @@ def api_citas():
 def recordatorios():
     pid = request.args.get("pac", "")
     out = []
+    nombre = ""
     if SUPABASE_URL and SUPABASE_KEY and pid:
         try:
-            r = requests.get(SUPABASE_URL + "/rest/v1/citas", headers=_sb_headers(),
-                             params={"pac_id": "eq." + pid, "recordado": "eq.false",
-                                     "order": "fecha.asc", "limit": 3,
-                                     "select": "id,fecha,hora,lugar,doctor,notas"}, timeout=6)
-            for c in (r.json() if r.ok else []):
-                out.append({"id": c["id"], "texto": ("📅 Le recuerdo su cita del " + str(c.get("fecha", "")) +
-                            " a las " + c.get("hora", "") + " en " + c.get("lugar", "") +
-                            " con " + c.get("doctor", "") + ". " + c.get("notas", "")).strip()})
+            rp = requests.get(SUPABASE_URL + "/rest/v1/pacientes", headers=_sb_headers(),
+                              params={"id": "eq." + pid, "select": "nombre"}, timeout=6)
+            nombre = ((rp.json() or [{}])[0].get("nombre", "") if rp.ok else "")
+            hoy = time.strftime("%Y-%m-%d")
+            ayer = time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400))
             rt = requests.get(SUPABASE_URL + "/rest/v1/tomas", headers=_sb_headers(),
                               params={"pac_id": "eq." + pid, "activo": "eq.true", "select": "id,medicamento,hora"}, timeout=6)
             tomas = rt.json() if rt.ok else []
-            hoy = time.strftime("%Y-%m-%d")
-            ahora = time.strftime("%H:%M")
             ok = requests.get(SUPABASE_URL + "/rest/v1/tomas_ok", headers=_sb_headers(),
-                              params={"pac_id": "eq." + pid, "fecha": "eq." + hoy, "select": "toma_id"}, timeout=6)
-            done_ids = set(str(x["toma_id"]) for x in (ok.json() if ok.ok else []))
-            for t in tomas:
-                if t["hora"] <= ahora and str(t["id"]) not in done_ids:
-                    out.append({"id": -1, "texto": "💊 Le recuerdo su " + t["medicamento"] + " de las " + t["hora"] + ". Si ya lo tomo, escriba: ya tome mi medicina."})
-            for o in out:
-                if o["id"] > 0:
-                    requests.patch(SUPABASE_URL + "/rest/v1/citas?id=eq." + str(o["id"]),
-                                   headers=_sb_headers(), json={"recordado": True}, timeout=6)
+                              params={"pac_id": "eq." + pid, "select": "toma_id,fecha"}, timeout=6)
+            done = set((str(x["toma_id"]), x["fecha"]) for x in (ok.json() if ok.ok else []))
+            def es_med(m): return not any(k in m.lower() for k in ["presion", "presión", "glucosa", "chequeo", "medicion", "medición"])
+            def frase(t):
+                if es_med(t["medicamento"]):
+                    return "su " + t["medicamento"] + " de las " + t["hora"] + ". ¿Me cuenta si ya lo tomo? Lo anito con carino."
+                return "su chequeo de las " + t["hora"] + ". ¿Ya se midio? Mandeme el numerito y lo guardo en su bitacora."
+            lineas = []
+            g_ayer = [t for t in tomas if (str(t["id"]), ayer) not in done]
+            g_man = [t for t in tomas if t["hora"] < "12:00" and (str(t["id"]), hoy) not in done]
+            g_tar = [t for t in tomas if t["hora"] >= "12:00" and (str(t["id"]), hoy) not in done]
+            if g_ayer:
+                lineas.append("• Ayer quedo pendiente: " + "; ".join(t["medicamento"] + " (" + t["hora"] + ")" for t in g_ayer) + ". ¿Me cuenta si lo tomo?")
+            if g_man:
+                lineas.append("• Hoy por la manana: " + "; ".join(frase(t) for t in g_man))
+            if g_tar:
+                lineas.append("• Hoy por la tarde: " + "; ".join(frase(t) for t in g_tar))
+            rc = requests.get(SUPABASE_URL + "/rest/v1/citas", headers=_sb_headers(),
+                              params=[("pac_id", "eq." + pid), ("recordado", "eq.false"), ("fecha", "gte." + hoy), ("order", "fecha.asc"), ("limit", "1"), ("select", "id,fecha,hora,lugar,doctor,notas")], timeout=6)
+            cit = (rc.json() or [])[:1] if rc.ok else []
+            if cit:
+                c = cit[0]
+                lineas.append("• 📅 Su proxima cita: " + str(c.get("fecha", "")) + " a las " + c.get("hora", "") + " en " + c.get("lugar", "") + " con " + c.get("doctor", "") + ". " + c.get("notas", ""))
+                requests.patch(SUPABASE_URL + "/rest/v1/citas?id=eq." + str(c["id"]), headers=_sb_headers(), json={"recordado": True}, timeout=6)
+            if lineas:
+                out.append({"id": -1, "texto": "🌞 Hola" + ((" " + nombre) if nombre else "") + ". Le comparto su guia con carino:\n" + "\n".join(lineas) + "\nCuando guste me cuenta y lo anito en su bitacora. 💙"})
         except Exception as e:
             fallo(f"supabase recordatorios: {str(e)[:60]}")
-    return jsonify({"items": out})
+    return jsonify({"items": out, "nombre": nombre})
 
 @app.route("/webhook", methods=["GET"])
 def verificar():
@@ -622,6 +651,8 @@ HTML = """<!DOCTYPE html>
  #inst{display:none;margin:8px auto;background:#e8f5e9;border:2px solid #4c8;padding:8px 16px;font-size:.9em;border-radius:12px}
  #ficha{margin:10px auto;background:#fff;padding:14px;border-radius:14px;box-shadow:0 1px 6px rgba(0,0,0,.2);text-align:center}
  #ficha input{font-size:1em;margin:6px;padding:10px;border-radius:10px;border:2px solid #bbc;display:block;width:80%;margin-left:auto;margin-right:auto}
+ #calpanel{position:fixed;right:10px;bottom:90px;width:250px;background:#fff;border:1px solid #bbb;border-radius:12px;padding:8px;z-index:60;font-size:.85em;box-shadow:0 2px 10px rgba(0,0,0,.25)}
+ @media(max-width:700px){#calpanel{position:static;width:auto;margin:8px auto}}
 body.alto{background:#000}
 body.alto header{background:#000;border-bottom:2px solid #ffeb3b}
 body.alto .msg.bot{background:#111;color:#ffeb3b;border:1px solid #ffeb3b}
@@ -634,15 +665,10 @@ body.alto #chat{background:#000}
  <div id="hdr2">
   <button id="Lauto" class="on">AUTO</button><button id="Les">ES</button><button id="Len">EN</button>
   <button id="fmas">A+</button><button id="fmenos">A−</button>
+ <button onclick="document.body.classList.toggle('alto')" style="margin-left:6px;padding:2px 10px;border-radius:12px;border:1px solid #fff;background:transparent;color:#fff;font-size:.8em">🔲</button>
  </div>
 </header>
 <button id="inst">📲 Instalar como app</button>
-<button onclick="abreCal()" style="margin:4px;padding:8px 14px;border-radius:10px;border:1px solid #0f274d;background:#fff;font-size:1em">📅 Mi calendario</button>
-<button onclick="document.body.classList.toggle('alto')" style="margin:4px;padding:8px 14px;border-radius:10px;border:1px solid #0f274d;background:#fff;font-size:1em">🔲 Contraste</button>
-<div id="calpanel" style="display:none;max-width:420px;margin:8px auto;background:#fff;border-radius:12px;padding:10px">
-<div style="text-align:center"><button onclick="calMes(-1)" style="font-size:1.1em">⬅️</button> <b id="caltit"></b> <button onclick="calMes(1)" style="font-size:1.1em">➡️</button></div>
-<div id="calbody"></div>
-</div>
 <div id="chat"></div>
 <div id="ficha" style="display:none">
  <b>Presentate para que te recuerde:</b>
@@ -650,6 +676,7 @@ body.alto #chat{background:#000}
  <input id="ftel" placeholder="Tu telefono (opcional)">
  <button id="fok" style="font-size:1em;padding:8px 20px;border-radius:10px;border:none;background:#0f274d;color:#fff">Guardar</button>
 </div>
+<div id="calpanel"><div style="text-align:center"><button onclick="calMes(-1)">⬅️</button> <b id="caltit"></b> <button onclick="calMes(1)">➡️</button></div><div id="calbody"></div></div>
 <div id="bar">
  <button id="bfoto">📷</button>
  <button id="bvoz">🎤</button>
@@ -668,6 +695,7 @@ function pintaAviso(t){pinta(false,t+'<br><button onclick="leer(this.parentNode.
 let calY=0,calM=0;
 function abreCal(){const p=document.getElementById('calpanel');p.style.display=p.style.display==='none'?'block':'none';if(p.style.display==='block'&&!calY){const h=new Date();calY=h.getFullYear();calM=h.getMonth();}pintaCal();}
 function calMes(d){calM+=d;if(calM<0){calM=11;calY--}if(calM>11){calM=0;calY++}pintaCal();}
+function initCal(){if(!calY){const h=new Date();calY=h.getFullYear();calM=h.getMonth();}pintaCal();}
 function pintaCal(){const d0=JSON.parse(pac()||'{}');const id=d0.t||d0.n||'';const mes=calY+'-'+String(calM+1).padStart(2,'0')+'-01';
  fetch('/api/citas?pac='+encodeURIComponent(id)+'&mes='+mes).then(r=>r.json()).then(d=>{
     const dias={};(d.items||[]).forEach(c=>{const dd=Number(c.fecha.slice(8,10));dias[dd]=(dias[dd]||'')+'🩺';});
@@ -718,7 +746,7 @@ window.addEventListener('beforeinstallprompt',e=>{evtI=e;document.getElementById
 document.getElementById('inst').onclick=async()=>{if(evtI){evtI.prompt();document.getElementById('inst').style.display='none'}};
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js');
 (function(){const d0=JSON.parse(pac()||'{}');const id=d0.t||d0.n||'';if(!id)return;
- fetch('/api/recordatorios?pac='+encodeURIComponent(id)).then(r=>r.json()).then(d=>{(d.items||[]).forEach(x=>pintaAviso(x.texto))}).catch(()=>{})})();
+ fetch('/api/recordatorios?pac='+encodeURIComponent(id)).then(r=>r.json()).then(d=>{if(d.nombre){const q=document.getElementById('quien');if(q)q.textContent=d.nombre;} (d.items||[]).forEach(x=>pintaAviso(x.texto)); initCal();}).catch(()=>{})})();
 pinta(false,'Hola, soy su asistente de salud. ❤️<br><br>Yo le puedo ayudar si me manda:<br>• Su presión arterial<br>• Su glucosa<br>• Una foto de su aparato<br>• O una nota de voz<br><br>¿Cómo se siente hoy?');
 </script>
 </body>
