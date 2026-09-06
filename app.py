@@ -62,6 +62,41 @@ def sb_guardar_lectura(pid, tipo, valores, triage, nota, canal):
     except Exception as e:
         fallo(f"supabase lectura: {str(e)[:60]}")
 
+def sb_guardar_tomas(pid, meds):
+    if not (SUPABASE_URL and SUPABASE_KEY and pid and meds): return
+    try:
+        requests.delete(SUPABASE_URL + "/rest/v1/tomas", headers=_sb_headers(),
+                        params={"pac_id": "eq." + pid}, timeout=8)
+        for nom, hors in meds.items():
+            for h in hors:
+                requests.post(SUPABASE_URL + "/rest/v1/tomas", headers=_sb_headers(),
+                              json={"pac_id": pid, "medicamento": nom, "hora": h}, timeout=8)
+    except Exception as e:
+        fallo(f"supabase tomas: {str(e)[:60]}")
+
+def sb_guardar_rutina(pid, rut):
+    if not (SUPABASE_URL and SUPABASE_KEY and pid and rut): return
+    try:
+        requests.patch(SUPABASE_URL + "/rest/v1/pacientes", headers=_sb_headers(),
+                       params={"id": "eq." + pid}, json={"rutina": rut}, timeout=8)
+    except Exception as e:
+        fallo(f"supabase rutina: {str(e)[:60]}")
+
+def sb_confirmar_toma(pid, texto):
+    if not (SUPABASE_URL and SUPABASE_KEY and pid): return
+    try:
+        r = requests.get(SUPABASE_URL + "/rest/v1/tomas", headers=_sb_headers(),
+                         params={"pac_id": "eq." + pid, "activo": "eq.true", "select": "id,medicamento,hora"}, timeout=6)
+        tomas = r.json() if r.ok else []
+        if not tomas: return
+        low = (texto or "").lower()
+        cand = [t for t in tomas if t["medicamento"].split()[0].lower() in low] or tomas
+        hoy = time.strftime("%Y-%m-%d")
+        requests.post(SUPABASE_URL + "/rest/v1/tomas_ok", headers=_sb_headers(),
+                      json={"pac_id": pid, "toma_id": cand[0]["id"], "fecha": hoy}, timeout=6)
+    except Exception as e:
+        fallo(f"supabase confirmar: {str(e)[:60]}")
+
 def sb_expediente(pid):
     if not (SUPABASE_URL and SUPABASE_KEY and pid): return ""
     try:
@@ -77,6 +112,10 @@ def sb_expediente(pid):
                                   "order": "fecha.asc", "limit": 1,
                                   "select": "fecha,hora,lugar,doctor,notas"}, timeout=6)
         cit = (r.json() or [])[:1] if False else (r3.json() or [])[:1] if r3.ok else []
+        r4 = requests.get(SUPABASE_URL + "/rest/v1/tomas", headers=_sb_headers(),
+                  params={"pac_id": "eq." + pid, "activo": "eq.true",
+                      "select": "medicamento,hora", "order": "hora.asc"}, timeout=6)
+        tomas = r4.json() if r4.ok else []
         partes = []
         if p.get("nombre"): partes.append("nombre=" + p["nombre"])
         if p.get("medicamentos"): partes.append("medicamentos=" + p["medicamentos"])
@@ -95,6 +134,8 @@ def sb_expediente(pid):
             partes.append("PROXIMA CITA: " + str(c.get("fecha", "")) + " " + c.get("hora", "") +
                           " en " + c.get("lugar", "") + " con " + c.get("doctor", "") +
                           ((" llevar: " + c.get("notas", "")) if c.get("notas") else ""))
+        if tomas:
+            partes.append("tomas programadas: " + "; ".join(t["medicamento"] + " " + t["hora"] for t in tomas))
         return ("\nEXPEDIENTE DEL PACIENTE: " + " | ".join(partes)) if partes else ""
     except Exception as e:
         fallo(f"supabase expediente: {str(e)[:60]}")
@@ -125,6 +166,9 @@ def fallo(msg):
     if len(ERRORES) > 20: ERRORES.pop(0)
 
 SYSTEM = ("Responde SIEMPRE con frases completas (nunca cortadas a la mitad), maximo 3 frases cortas, separadas por renglones, con palabras sencillas para adultos mayores.\n"
+"Si el paciente menciona medicamentos, dosis u horarios, agrega al final una linea: MEDS: nombre=HH:MM,HH:MM; nombre2=HH:MM\n"
+"Si menciona a que hora se mide la presion o la glucosa, agrega: RUTINA: presion=HH:MM; glucosa=HH:MM\n"
+"Si el EXPEDIENTE aparece vacio (paciente nuevo), presentate con carino y preguntale que medicamentos toma con sus horarios y a que hora se mide la presion.\n"
 "Eres 'Salud Mexicali', asistente calido de salud para adultos mayores con hipertension y diabetes.\n"
 "IDIOMA: responde SIEMPRE en el idioma del paciente (espanol o ingles).\n"
 "TRATO: si conoces el nombre del paciente (ver DATOS DEL PACIENTE), dirigete a el por su nombre con respeto y calidez (ej. 'don Antonio', 'senora Maria'); NUNCA uses 'corazon' ni 'carino' si ya sabes su nombre. Si no lo conoces, usa un trato amable neutro.\n"
@@ -157,9 +201,22 @@ def limpiar(txt):
         if pu: valores["pulso"] = pu.group(1)
         gl = re.search(r"GLUCOSA\s*=?\s*(\d{2,3})", s)
         if gl: valores["glucosa"] = gl.group(1)
+    meds = {}
+    mm = re.search(r"MEDS:(.+)", txt)
+    if mm:
+        for par in mm.group(1).split(";"):
+            if "=" in par:
+                nom, hors = par.split("=", 1)
+                meds[nom.strip()] = [h.strip() for h in hors.split(",") if h.strip()]
+        txt = re.sub(r"MEDS:.+", "", txt)
+    rut = ""
+    mr = re.search(r"RUTINA:(.+)", txt)
+    if mr:
+        rut = mr.group(1).strip()
+        txt = re.sub(r"RUTINA:.+", "", txt)
     txt = re.sub(r"TRIAGE:\s*(normal|moderado|critico)", "", txt or "", flags=re.I)
     txt = re.sub(r"VALORES:.*", "", txt or "")
-    return txt.strip(), triage, valores
+    return txt.strip(), triage, valores, meds, rut
 
 def datos_pac(raw):
     try:
@@ -354,9 +411,11 @@ def finalizar(txt_crudo, canal, tipo, usuario, pid, nombre, lang):
     p = registrar(pid, nombre)
     if not txt_crudo:
         return jsonify({"texto": "No te escuche bien, intentalo otra vez por favor. / I didn't hear you well, please try again.", "triage": "normal", "valores": {}, "lang": lang})
-    texto, triage, valores = limpiar(txt_crudo)
+    texto, triage, valores, meds, rut = limpiar(txt_crudo)
     recordar(p, tipo + " " + usuario + " -> " + triage + " " + json.dumps(valores))
     sb_guardar_lectura(pid, tipo, valores, triage, usuario, canal)
+    sb_guardar_tomas(pid, meds)
+    sb_guardar_rutina(pid, rut)
     BITACORA.append({"ts": time.strftime("%Y-%m-%d %H:%M"), "canal": canal, "pac": pid,
                      "usuario": usuario, "bot": texto, "triage": triage, "valores": valores})
     return jsonify({"texto": texto, "triage": triage, "valores": valores, "lang": lang})
@@ -412,6 +471,8 @@ def api_text():
     t = d.get("texto", "")
     n, tel = datos_pac(d.get("pac", ""))
     u = USU.setdefault(tel or n or "anon", {"msgs":0,"fotos":0,"voces":0}); u["msgs"] += 1
+    if re.search(r"(tom[eé]|pastilla|medicamento)", t, re.I):
+        sb_confirmar_toma(tel or n, t)
     lp = d.get("lang", "auto")
     lang = lp if lp in ("es", "en") else detectar_idioma(t)
     return finalizar(generar_texto(contexto(tel or n) + "\nEl paciente escribe: " + t + sufijo_lang(lang), lang), "web", "texto", t, tel or n, n, lang)
@@ -454,9 +515,21 @@ def recordatorios():
                 out.append({"id": c["id"], "texto": ("📅 Le recuerdo su cita del " + str(c.get("fecha", "")) +
                             " a las " + c.get("hora", "") + " en " + c.get("lugar", "") +
                             " con " + c.get("doctor", "") + ". " + c.get("notas", "")).strip()})
+            rt = requests.get(SUPABASE_URL + "/rest/v1/tomas", headers=_sb_headers(),
+                              params={"pac_id": "eq." + pid, "activo": "eq.true", "select": "id,medicamento,hora"}, timeout=6)
+            tomas = rt.json() if rt.ok else []
+            hoy = time.strftime("%Y-%m-%d")
+            ahora = time.strftime("%H:%M")
+            ok = requests.get(SUPABASE_URL + "/rest/v1/tomas_ok", headers=_sb_headers(),
+                              params={"pac_id": "eq." + pid, "fecha": "eq." + hoy, "select": "toma_id"}, timeout=6)
+            done_ids = set(str(x["toma_id"]) for x in (ok.json() if ok.ok else []))
+            for t in tomas:
+                if t["hora"] <= ahora and str(t["id"]) not in done_ids:
+                    out.append({"id": -1, "texto": "💊 Le recuerdo su " + t["medicamento"] + " de las " + t["hora"] + ". Si ya lo tomo, escriba: ya tome mi medicina."})
             for o in out:
-                requests.patch(SUPABASE_URL + "/rest/v1/citas?id=eq." + str(o["id"]),
-                               headers=_sb_headers(), json={"recordado": True}, timeout=6)
+                if o["id"] > 0:
+                    requests.patch(SUPABASE_URL + "/rest/v1/citas?id=eq." + str(o["id"]),
+                                   headers=_sb_headers(), json={"recordado": True}, timeout=6)
         except Exception as e:
             fallo(f"supabase recordatorios: {str(e)[:60]}")
     return jsonify({"items": out})
@@ -491,7 +564,7 @@ def recibir():
         else:
             enviar_wa(de, "Recibi tu mensaje. En esta version leo fotos y texto.")
             return "OK", 200
-        texto, triage, valores = limpiar(crudo or "")
+        texto, triage, valores, meds, rut = limpiar(crudo or "")
         recordar(p, msg["type"] + " -> " + triage + " " + json.dumps(valores))
         BITACORA.append({"ts": time.strftime("%Y-%m-%d %H:%M"), "canal": "whatsapp",
                          "usuario": msg.get("text", {}).get("body", "(foto)"), "bot": texto, "triage": triage, "valores": valores})
