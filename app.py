@@ -397,12 +397,19 @@ def generar_voz(audio, mime, lang):
             fallo(f"groq whisper: {str(e)[:60]}")
     return None
 
+EMO = re.compile("[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U00002B00-\U00002BFF\U0001F1E6-\U0001F1FF❤️♥✅]", flags=re.UNICODE)
+def texto_voz(t):
+    t = EMO.sub("", t or "")
+    t = t.replace("•", " ").replace("\n", ". ")
+    t = re.sub(r"\s+", " ", t)
+    return t.strip()[:600]
+
 async def _edge_async(texto, lang):
     try:
         import edge_tts
-        voz = "en-US-AriaNeural" if lang == "en" else "es-MX-DaliaNeural"
+        voz = "es-MX-DaliaNeural"
         ruta = os.path.join(tempfile.gettempdir(), "salud_" + str(uuid.uuid4()) + ".mp3")
-        c = edge_tts.Communicate(texto, voz)
+        c = edge_tts.Communicate(texto_voz(texto), voz, rate="-4%")
         await c.save(ruta)
         with open(ruta, "rb") as f:
             data = f.read()
@@ -414,7 +421,7 @@ async def _edge_async(texto, lang):
         fallo(f"edge_tts: {str(e)[:60]}")
         return None
 
-def tts(texto, lang):
+def tts(texto, lang="es"):
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(_edge_async(texto, lang))
@@ -445,6 +452,14 @@ def api_tts():
     d = request.get_json(force=True)
     a = tts(d.get("texto", "")[:600], d.get("lang", "es"))
     return jsonify({"audio": a, "mime": "audio/mpeg"})
+
+BIENV = {"audio": None}
+@app.route("/api/bienvenida")
+def bienvenida():
+    txt = "Hola, soy su asistente de salud. Yo le puedo ayudar si me manda su presión arterial, su glucosa, una foto de su aparato, o una nota de voz. ¿Cómo se siente hoy?"
+    if BIENV["audio"] is None:
+        BIENV["audio"] = tts(txt) or ""
+    return jsonify({"texto": txt, "audio": BIENV["audio"]})
 
 @app.route("/test")
 def test():
@@ -577,7 +592,8 @@ def recordatorios():
                 lineas.append("• 📅 Su proxima cita: " + str(c.get("fecha", "")) + " a las " + c.get("hora", "") + " en " + c.get("lugar", "") + " con " + c.get("doctor", "") + ". " + c.get("notas", ""))
                 requests.patch(SUPABASE_URL + "/rest/v1/citas?id=eq." + str(c["id"]), headers=_sb_headers(), json={"recordado": True}, timeout=6)
             if lineas:
-                out.append({"id": -1, "texto": "🌞 Hola" + ((" " + nombre) if nombre else "") + ". Le comparto su guia con carino:\n" + "\n".join(lineas) + "\nCuando guste me cuenta y lo anito en su bitacora. 💙"})
+                aviso = "🌞 Hola" + ((" " + nombre) if nombre else "") + ". Le comparto su guia con carino:\n" + "\n".join(lineas) + "\nCuando guste me cuenta y lo anito en su bitacora. 💙"
+                out.append({"id": -1, "texto": aviso, "audio": tts(texto_voz(aviso)) or ""})
         except Exception as e:
             fallo(f"supabase recordatorios: {str(e)[:60]}")
     return jsonify({"items": out, "nombre": nombre})
@@ -661,7 +677,7 @@ body.alto #chat{background:#000}
 </style>
 </head>
 <body>
-<header>❤️ Salud Mexicali
+<header>❤️ Salud Mexicali <span id="quien" style="position:absolute;right:12px;top:10px;font-size:.75em"></span>
  <div id="hdr2">
   <button id="Lauto" class="on">AUTO</button><button id="Les">ES</button><button id="Len">EN</button>
   <button id="fmas">A+</button><button id="fmenos">A−</button>
@@ -689,9 +705,9 @@ const chat=document.getElementById('chat');
 const pac=()=>localStorage.getItem('pac')||'';
 let langPref='auto',fontScale=1,thinkT=null,thinkS=0,rec=null,chunks=[];
 function aplicarFuente(){document.documentElement.style.setProperty('--fs',(20*fontScale)+'px')}
-function pinta(q,t,cls){const d=document.createElement('div');d.className='b '+(q?'yo':'bot')+(cls||'');d.innerHTML=t;chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d}
+function pinta(q,t,cls){const aud=cls&&cls.length>100?cls:'';const d=document.createElement('div');d.className='b '+(q?'yo':'bot')+(aud?'':(cls||''));d.innerHTML=t;if(aud){const au=document.createElement('audio');au.controls=true;au.src='data:audio/mpeg;base64,'+aud;d.appendChild(au)}chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d}
 function leer(t){try{const u=new SpeechSynthesisUtterance(t.replace(/<[^>]*>/g,' '));u.lang='es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
-function pintaAviso(t){pinta(false,t+'<br><button onclick="leer(this.parentNode.innerText)" style="margin-top:6px;padding:8px 16px;font-size:1.05em;border-radius:10px;border:none;background:#0f274d;color:#fff">🔊 Escuchar</button>');leer(t);}
+function pintaAviso(t,aud){pinta(false,t,aud);}
 let calY=0,calM=0;
 function abreCal(){const p=document.getElementById('calpanel');p.style.display=p.style.display==='none'?'block':'none';if(p.style.display==='block'&&!calY){const h=new Date();calY=h.getFullYear();calM=h.getMonth();}pintaCal();}
 function calMes(d){calM+=d;if(calM<0){calM=11;calY--}if(calM>11){calM=0;calY++}pintaCal();}
@@ -746,8 +762,8 @@ window.addEventListener('beforeinstallprompt',e=>{evtI=e;document.getElementById
 document.getElementById('inst').onclick=async()=>{if(evtI){evtI.prompt();document.getElementById('inst').style.display='none'}};
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js');
 (function(){const d0=JSON.parse(pac()||'{}');const id=d0.t||d0.n||'';if(!id)return;
- fetch('/api/recordatorios?pac='+encodeURIComponent(id)).then(r=>r.json()).then(d=>{if(d.nombre){const q=document.getElementById('quien');if(q)q.textContent=d.nombre;} (d.items||[]).forEach(x=>pintaAviso(x.texto)); initCal();}).catch(()=>{})})();
-pinta(false,'Hola, soy su asistente de salud. ❤️<br><br>Yo le puedo ayudar si me manda:<br>• Su presión arterial<br>• Su glucosa<br>• Una foto de su aparato<br>• O una nota de voz<br><br>¿Cómo se siente hoy?');
+ fetch('/api/recordatorios?pac='+encodeURIComponent(id)).then(r=>r.json()).then(d=>{if(d.nombre){const q=document.getElementById('quien');if(q)q.textContent=d.nombre;} (d.items||[]).forEach(x=>pintaAviso(x.texto,x.audio)); initCal();}).catch(()=>{})})();
+fetch('/api/bienvenida').then(r=>r.json()).then(d=>pinta(false,d.texto,d.audio)).catch(()=>pinta(false,'Hola, soy su asistente de salud. ❤️'));
 </script>
 </body>
 </html>"""
