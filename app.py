@@ -767,7 +767,6 @@ let langPref='auto',fontScale=1,thinkT=null,thinkS=0,rec=null,chunks=[];
 function aplicarFuente(){document.documentElement.style.setProperty('--fs',(20*fontScale)+'px')}
 function pinta(q,t,cls){const aud=cls&&cls.length>100?cls:'';const d=document.createElement('div');d.className='b '+(q?'yo':'bot')+(aud?'':(cls||''));d.innerHTML=t;if(aud){const au=document.createElement('audio');au.controls=true;au.src='data:audio/mpeg;base64,'+aud;d.appendChild(au)}chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d}
 function leer(t){try{const u=new SpeechSynthesisUtterance(t.replace(/<[^>]*>/g,' '));u.lang='es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
-function mandar(t){const i=document.querySelector('#chat input, input[placeholder*="Escribe"]');if(i){i.value=t;const b=i.closest('div').parentElement.querySelector('button:last-of-type')||document.getElementById('benv');if(b)b.click();}}
 function pintaAviso(t,aud){pinta(false,t+'<br><button onclick="mandar(\'ya tomé mi medicina\')" style="margin:4px;padding:8px 14px;border-radius:10px;border:none;background:#1b5e20;color:#fff;font-size:1em">✔ Ya tomé mi medicina</button><button onclick="mandar(\'ya me medí\')" style="margin:4px;padding:8px 14px;border-radius:10px;border:none;background:#0f274d;color:#fff;font-size:1em">✔ Ya me medí</button>',aud);}
 let calY=0,calM=0;
 function abreCal(){const p=document.getElementById('calpanel');p.style.display=p.style.display==='none'?'block':'none';if(p.style.display==='block'&&!calY){const h=new Date();calY=h.getFullYear();calM=h.getMonth();}pintaCal();}
@@ -775,13 +774,14 @@ function calMes(d){calM+=d;if(calM<0){calM=11;calY--}if(calM>11){calM=0;calY++}p
 function initCal(){if(!calY){const h=new Date();calY=h.getFullYear();calM=h.getMonth();}pintaCal();}
 function pintaCal(){const d0=JSON.parse(pac()||'{}');const id=d0.t||d0.n||'';const mes=calY+'-'+String(calM+1).padStart(2,'0')+'-01';
  fetch('/api/citas?pac='+encodeURIComponent(id)+'&mes='+mes).then(r=>r.json()).then(d=>{
-     const dias={};window.diasDet={};(d.items||[]).forEach(c=>{const dd=Number(c.fecha.slice(8,10));dias[dd]=(dias[dd]||'')+'🩺';window.diasDet[dd]=(window.diasDet[dd]||[]).concat([c]);});
+    window.diasDet={};const dias={};
+    (d.items||[]).forEach(c=>{const dd=Number(c.fecha.slice(8,10));dias[dd]=(dias[dd]||'')+'🩺';window.diasDet[dd]=(window.diasDet[dd]||[]).concat([c]);});
     document.getElementById('caltit').textContent=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'][calM]+' '+calY;
     const prim=new Date(calY,calM,1);const nd=new Date(calY,calM+1,0).getDate();let h='<table style="width:100%;text-align:center;font-size:1.15em;border-collapse:collapse"><tr>';
     ['D','L','M','M','J','V','S'].forEach(x=>h+='<th>'+x+'</th>');h+='</tr><tr>';
     for(let i=0;i<prim.getDay();i++)h+='<td></td>';
-    for(let dd=1;dd<=nd;dd++){h+='<td '+(dias[dd]?'onclick="verDia('+dd+')" ':'')+'style="padding:8px;border:1px solid #ccc;'+(dias[dd]?'background:#ffd6d6;font-weight:bold;cursor:pointer':'')+'">'+dd+(dias[dd]||'')+'</td>';if((prim.getDay()+dd)%7===0)h+='</tr><tr>';}
-    h+='</tr></table>';document.getElementById('calbody').innerHTML=h;}).catch(()=>{});}
+    for(let dd=1;dd<=nd;dd++){const mk=dias[dd];h+='<td onclick="verDia('+dd+')" style="cursor:pointer;padding:8px;border:1px solid #ccc;'+(mk?'background:#ffd6d6;font-weight:bold':'')+'">'+dd+(mk||'')+'</td>';if((prim.getDay()+dd)%7===0)h+='</tr><tr>';}
+    h+='</tr></table>';document.getElementById('calbody').innerHTML=h;const det=document.getElementById('caldet');if(det)det.innerHTML='';}).catch(()=>{});}
 function verDia(d){const cs=window.diasDet&&window.diasDet[d]||[];document.getElementById('caldet').innerHTML=cs.length?cs.map(c=>'📅 Día '+d+': '+c.hora+' en '+c.lugar+' con '+c.doctor+'. '+(c.notas||'')).join('<br>'):'Sin citas ese día.';}
 function pensando(){quitando();pinta(false,'<span class="dots"><i></i><i></i><i></i></span> Trabajando en tu respuesta… <span id="tsec">0</span> s');thinkS=0;thinkT=setInterval(()=>{thinkS++;const e=document.getElementById('tsec');if(e)e.textContent=thinkS},1000)}
 function quitando(){if(thinkT){clearInterval(thinkT);thinkT=null}}
@@ -809,10 +809,10 @@ document.getElementById('fok').onclick=()=>{const nom=document.getElementById('f
  const tomas=[];document.querySelectorAll('#ftomas div').forEach(d=>{const i=d.querySelectorAll('input');const n=i[0].value.trim();const hs=normHoras(i[1].value);if(n&&hs.length)tomas.push({nombre:n,horas:hs});});
  const body={nombre:nom,tel:tel,edad:document.getElementById('fedad').value,sexo:document.getElementById('fsexo').value,diagnostico:document.getElementById('fdiag').value,toma_presion:document.getElementById('ftapres').checked,mide_glucosa:document.getElementById('fgluc').checked,medico:document.getElementById('fmed').value,medico_tel:document.getElementById('fmedtel').value,medico_mail:document.getElementById('fmedmail').value,cuidador_nombre:document.getElementById('fcuinom').value,cuidador_tel:document.getElementById('fcuitel').value,cuidador_parentesco:document.getElementById('fcuipar').value,tomas:tomas,medicamentos:tomas.map(t=>t.nombre+' '+t.horas.join(',')).join('; ')};
  fetch('/api/registro',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(()=>{localStorage.setItem('pac',JSON.stringify({n:nom,t:tel}));document.getElementById('ficha').style.display='none';pintaNombre();initCal();pinta(false,'Gracias, '+nom+'. Su expediente queda guardado con carino. 💙');});};
-document.getElementById('txt').onkeydown=e=>{if(e.key==='Enter')document.getElementById('benv').click()};
-document.getElementById('benv').onclick=()=>{const t=document.getElementById('txt').value.trim();if(!t)return;
- document.getElementById('txt').value='';pinta(true,t);
- api('/api/text',JSON.stringify({texto:t,pac:pac(),lang:langPref}))};
+function enviarTexto(t){t=(t||'').trim();if(!t)return;document.getElementById('txt').value='';pinta(true,t);api('/api/text',JSON.stringify({texto:t,pac:pac(),lang:langPref}));}
+function mandar(t){enviarTexto(t);}
+document.getElementById('txt').onkeydown=e=>{if(e.key==='Enter')enviarTexto(e.target.value)};
+document.getElementById('benv').onclick=()=>enviarTexto(document.getElementById('txt').value);
 document.getElementById('bfoto').onclick=()=>document.getElementById('ffoto').click();
 document.getElementById('ffoto').onchange=e=>{const f=e.target.files[0];if(!f)return;pinta(true,'📷 (foto)');
  const fd=new FormData();fd.append('foto',f);fd.append('pac',pac());fd.append('lang',langPref==='auto'?'es':langPref);api('/api/foto',fd)};
@@ -833,8 +833,8 @@ let evtI=null;
 window.addEventListener('beforeinstallprompt',e=>{evtI=e;document.getElementById('inst').style.display='block'});
 document.getElementById('inst').onclick=async()=>{if(evtI){evtI.prompt();document.getElementById('inst').style.display='none'}};
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js');
-(function(){const d0=JSON.parse(pac()||'{}');const id=d0.t||d0.n||'';if(!id)return;
- fetch('/api/recordatorios?pac='+encodeURIComponent(id)).then(r=>r.json()).then(d=>{if(d.nombre){const q=document.getElementById('quien');if(q)q.textContent=d.nombre;} (d.items||[]).forEach(x=>pintaAviso(x.texto,x.audio)); initCal();}).catch(()=>{})})();
+(function(){const d0=JSON.parse(pac()||'{}');const id=d0.t||d0.n||'';if(id){fetch('/api/recordatorios?pac='+encodeURIComponent(id)).then(r=>r.json()).then(d=>{if(d.nombre){const q=document.getElementById('quien');if(q)q.textContent=d.nombre;} (d.items||[]).forEach(x=>pintaAviso(x.texto,x.audio));}).catch(()=>{});}})();
+initCal();
 fetch('/api/bienvenida').then(r=>r.json()).then(d=>pinta(false,d.texto,d.audio)).catch(()=>pinta(false,'Hola, soy su asistente de salud. ❤️'));
 </script>
 </body>
