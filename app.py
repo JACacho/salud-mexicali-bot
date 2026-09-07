@@ -386,7 +386,7 @@ def generar_foto(b64, mime, lang):
                         {"role": "system", "content": SYSTEM},
                         {"role": "user", "content": [
                             {"type": "text", "text": "Lee los numeros de esta foto de un tensiometro o glucometro y acompana."},
-                            {"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + b64}}]}]}, timeout=30)
+                            {"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + b64}}]}]}, timeout=45)
                 r.raise_for_status()
                 contar("groq")
                 return r.json()["choices"][0]["message"]["content"]
@@ -401,7 +401,7 @@ def generar_foto(b64, mime, lang):
                         {"role": "system", "content": SYSTEM},
                         {"role": "user", "content": [
                             {"type": "text", "text": "Lee los numeros de esta foto de un tensiometro o glucometro y acompana."},
-                            {"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + b64}}]}]}, timeout=30)
+                            {"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + b64}}]}]}, timeout=45)
                 r.raise_for_status()
                 return r.json()["choices"][0]["message"]["content"]
             except Exception as e:
@@ -462,7 +462,11 @@ def tts(texto, lang="es"):
 def finalizar(txt_crudo, canal, tipo, usuario, pid, nombre, lang, extra="", botones=None):
     p = registrar(pid, nombre)
     if not txt_crudo:
-        return jsonify({"texto": "No te escuche bien, intentalo otra vez por favor. / I didn't hear you well, please try again.", "triage": "normal", "valores": {}, "lang": lang, "botones": botones or []})
+        if tipo == "voz":
+            msg = "No te escuche bien, intentalo otra vez por favor. / I didn't hear you well, please try again."
+        else:
+            msg = "No pude procesar su mensaje esta vez. Intente de nuevo, por favor."
+        return jsonify({"texto": msg, "triage": "normal", "valores": {}, "lang": lang, "botones": botones or []})
     texto, triage, valores, meds, rut = limpiar(txt_crudo)
     texto += extra
     recordar(p, tipo + " " + usuario + " -> " + triage + " " + json.dumps(valores))
@@ -585,13 +589,21 @@ def api_text():
 
 @app.route("/api/foto", methods=["POST"])
 def api_foto():
-    contar("web"); contar("fotos")
-    f = request.files.get("foto")
-    n, tel = datos_pac(request.form.get("pac", ""))
-    u = USU.setdefault(tel or n or "anon", {"msgs":0,"fotos":0,"voces":0}); u["fotos"] += 1
-    lang = request.form.get("lang", "es")
-    b64 = base64.b64encode(f.read()).decode()
-    return finalizar(generar_foto(b64, f.mimetype or "image/jpeg", lang), "web", "foto", "(foto)", tel or n, n, lang)
+    try:
+        contar("web"); contar("fotos")
+        f = request.files.get("foto")
+        n, tel = datos_pac(request.form.get("pac", ""))
+        u = USU.setdefault(tel or n or "anon", {"msgs":0,"fotos":0,"voces":0}); u["fotos"] += 1
+        lang = request.form.get("lang", "es")
+        b64 = base64.b64encode(f.read()).decode()
+        crudo = generar_foto(b64, f.mimetype or "image/jpeg", lang)
+        if not crudo:
+            raise RuntimeError("vision sin resultado")
+        return finalizar(crudo, "web", "foto", "(foto)", tel or n, n, lang)
+    except Exception as e:
+        fallo(f"foto: {str(e)[:60]}")
+        msg = "No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza."
+        return jsonify({"texto": msg, "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "botones": []})
 
 @app.route("/api/voz", methods=["POST"])
 def api_voz():
@@ -889,8 +901,9 @@ function mandar(t){enviarTexto(t);}
 document.getElementById('txt').onkeydown=e=>{if(e.key==='Enter')enviarTexto(e.target.value)};
 document.getElementById('benv').onclick=()=>enviarTexto(document.getElementById('txt').value);
 document.getElementById('bfoto').onclick=()=>document.getElementById('ffoto').click();
-function mandaFoto(f){if(!f)return;pinta(true,'📷 (foto)');
- const fd=new FormData();fd.append('foto',f);fd.append('pac',pac());fd.append('lang',langPref==='auto'?'es':langPref);api('/api/foto',fd)};
+function mandaFoto(f){if(!f)return;pinta(false,'📷 Recibí su foto. La estoy leyendo con calma, un momento por favor...');
+ const fd=new FormData();fd.append('foto',f);fd.append('pac',pac());fd.append('lang',langPref==='auto'?'es':langPref);
+ fetch('/api/foto',{method:'POST',body:fd}).then(r=>{if(!r.ok)throw new Error('foto '+r.status);return r.json()}).then(d=>{if(chat.lastChild)chat.lastChild.remove();if(d&&d.texto)botMsg(d);else pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')}).catch(()=>{if(chat.lastChild)chat.lastChild.remove();pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')});};
 document.getElementById('ffoto').onchange=e=>mandaFoto(e.target.files[0]);
 window.addEventListener('dragover',function(e){e.preventDefault();});
 window.addEventListener('drop',function(e){e.preventDefault();const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];if(f&&f.type.indexOf('image/')===0)mandaFoto(f);});
