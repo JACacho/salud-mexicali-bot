@@ -52,13 +52,13 @@ def sb_guardar_paciente(pid, nombre):
     except Exception as e:
         fallo(f"supabase paciente: {str(e)[:60]}")
 
-def sb_guardar_lectura(pid, tipo, valores, triage, nota, canal):
+def sb_guardar_lectura(pid, tipo, valores, triage, nota, canal, momento=""):
     if not (SUPABASE_URL and SUPABASE_KEY and pid): return
     try:
         requests.post(SUPABASE_URL + "/rest/v1/lecturas", headers=_sb_headers(),
                       json={"pac_id": pid, "tipo": tipo, "ta": valores.get("ta", ""),
                             "pulso": valores.get("pulso", ""), "glucosa": valores.get("glucosa", ""),
-                            "triage": triage, "nota": (nota or "")[:200], "canal": canal}, timeout=8)
+                            "triage": triage, "nota": (nota or "")[:200], "canal": canal, "momento": momento}, timeout=8)
     except Exception as e:
         fallo(f"supabase lectura: {str(e)[:60]}")
 
@@ -222,7 +222,7 @@ SYSTEM = ("Responde SIEMPRE con frases completas (nunca cortadas a la mitad), ma
 "Si es critico: pide con carino que se vuelva a medir en 5 minutos sentado y avisa que notificaras a su familia.\n"
 "Al final agrega SIEMPRE, en lineas separadas, exactamente:\n"
 "TRIAGE:normal  (o TRIAGE:moderado o TRIAGE:critico)\n"
-"y si detectas numeros: VALORES: TA=130/80 PULSO=76 GLUCOSA=110 (solo los que veas).")
+"VALORES: ta=SIST/DIAST, pulso=P, glucosa=G, hora=HH:MM (solo los que aparezcan; si el paciente dice a qué hora se midió, pon esa hora en hora=). Al responder, menciona con cariño el pulso si lo hay, y di si es por la mañana, por la tarde o por la noche según la hora actual que aparece en el contexto.")
 
 def detectar_idioma(t):
     t = (t or "").lower()
@@ -246,6 +246,8 @@ def limpiar(txt):
         if pu: valores["pulso"] = pu.group(1)
         gl = re.search(r"GLUCOSA\s*=?\s*(\d{2,3})", s)
         if gl: valores["glucosa"] = gl.group(1)
+        hr = re.search(r"HORA\s*=?\s*(\d{1,2})(?::(\d{2}))?", s, re.I)
+        if hr: valores["hora"] = str(int(hr.group(1))).zfill(2) + ":" + (hr.group(2) or "00")
     meds = {}
     mm = re.search(r"MEDS:(.+)", txt)
     if mm:
@@ -285,6 +287,7 @@ def contexto(pid):
     p = PAC.get(pid)
     if p and p.get("hist"):
         partes.append("Historia de hoy: " + " | ".join(p["hist"][-3:]))
+    partes.append("hora actual: " + time.strftime("%H:%M"))
     return ("\n" + "\n".join(partes) + "\nUsa su nombre al hablarle.") if partes else ""
 
 def recordar(p, linea):
@@ -469,8 +472,16 @@ def finalizar(txt_crudo, canal, tipo, usuario, pid, nombre, lang, extra="", boto
         return jsonify({"texto": msg, "triage": "normal", "valores": {}, "lang": lang, "botones": botones or []})
     texto, triage, valores, meds, rut = limpiar(txt_crudo)
     texto += extra
+    h = int(time.strftime("%H"))
+    hora_lectura = valores.get("hora")
+    if hora_lectura:
+        mh = re.search(r"(\d{1,2})(?::(\d{2}))?", str(hora_lectura))
+        if mh:
+            h = int(mh.group(1))
+            valores["hora"] = str(h).zfill(2) + ":" + (mh.group(2) or "00")
+    momento = "manana" if h < 12 else ("tarde" if h < 19 else "noche")
     recordar(p, tipo + " " + usuario + " -> " + triage + " " + json.dumps(valores))
-    sb_guardar_lectura(pid, tipo, valores, triage, usuario, canal)
+    sb_guardar_lectura(pid, tipo, valores, triage, usuario, canal, momento=momento)
     if valores.get("ta") or valores.get("glucosa"):
         sb_confirmar_medicion(pid)
         PEND.pop(pid, None)
@@ -793,6 +804,10 @@ HTML = """<!DOCTYPE html>
  .dots i{display:inline-block;width:8px;height:8px;border-radius:50%;background:#0f274d;margin:0 2px;animation:lat 1s infinite}
  .dots i:nth-child(2){animation-delay:.2s}.dots i:nth-child(3){animation-delay:.4s}
  @keyframes lat{0%,100%{transform:translateY(0);opacity:.4}50%{transform:translateY(-5px);opacity:1}}
+ .typing span{display:inline-block;width:9px;height:9px;border-radius:50%;background:#0f274d;margin:0 2px;animation:tp 1s infinite}
+ .typing span:nth-child(2){animation-delay:.2s}
+ .typing span:nth-child(3){animation-delay:.4s}
+ @keyframes tp{0%,100%{opacity:.2;transform:translateY(0)}50%{opacity:1;transform:translateY(-4px)}}
  #bar{display:flex;gap:8px;padding:10px;background:#fff;border-top:2px solid #dde}
  #bar input{flex:1;font-size:1em;padding:12px;border-radius:12px;border:2px solid #bbc}
  #bar button{font-size:1.2em;border:none;border-radius:12px;background:#0f274d;color:#fff;padding:0 16px}
@@ -854,6 +869,8 @@ function aplicarFuente(){document.documentElement.style.setProperty('--fs',(20*f
 function pinta(q,t,cls){const aud=cls&&cls.length>100?cls:'';const d=document.createElement('div');d.className='b '+(q?'yo':'bot')+(aud?'':(cls||''));d.innerHTML=t;if(aud){const au=document.createElement('audio');au.controls=true;au.src='data:audio/mpeg;base64,'+aud;d.appendChild(au)}chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d}
 function leer(t){try{const u=new SpeechSynthesisUtterance(t.replace(/<[^>]*>/g,' '));u.lang='es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
 function pintaAviso(t,aud){pinta(false,t+`<br><button onclick="mandar('ya tomé mi medicina')" style="margin:4px;padding:8px 14px;border-radius:10px;border:none;background:#1b5e20;color:#fff;font-size:1em">✔ Ya tomé mi medicina</button><button onclick="mandar('ya me medí')" style="margin:4px;padding:8px 14px;border-radius:10px;border:none;background:#0f274d;color:#fff;font-size:1em">✔ Ya me medí</button>`,aud);}
+function typingOn(){typingOff();const d=document.createElement('div');d.className='msg bot typing';d.id='typing';d.innerHTML='<span></span><span></span><span></span>';document.getElementById('chat').appendChild(d);d.scrollIntoView({behavior:'smooth'});}
+function typingOff(){const d=document.getElementById('typing');if(d)d.remove();}
 let calY=0,calM=0;
 function abreCal(){const p=document.getElementById('calpanel');p.style.display=p.style.display==='none'?'block':'none';if(p.style.display==='block'&&!calY){const h=new Date();calY=h.getFullYear();calM=h.getMonth();}pintaCal();}
 function calMes(d){calM+=d;if(calM<0){calM=11;calY--}if(calM>11){calM=0;calY++}pintaCal();}
@@ -877,10 +894,10 @@ function botMsg(d){const t=(d.texto||'').replace(/&/g,'&amp;').replace(/</g,'&lt
  if(d.texto)agregaAudio(el,d.texto,d.lang||'es');
  if(d.botones&&d.botones.length){pinta(false,d.botones.map(b=>`<button onclick="mandar('${b}')" style="margin:4px;padding:8px 14px;border-radius:10px;border:none;background:#0f274d;color:#fff;font-size:1em">${b}</button>`).join(''))}}
 async function api(url,body){pensando();
- try{const r=await fetch(url,{method:'POST',body});
- if(!r.ok){quitando();chat.lastChild.remove();pinta(false,'⚠️ Error '+r.status+'. Abre /test para ver por que.');return}
-    const d=await r.json();quitando();chat.lastChild.remove();botMsg(d)}
- catch(e){quitando();chat.lastChild.remove();pinta(false,'⚠️ Sin conexion con el servidor: '+e)}}
+ typingOn();try{const r=await fetch(url,{method:'POST',body});
+ if(!r.ok){typingOff();quitando();chat.lastChild.remove();pinta(false,'⚠️ Error '+r.status+'. Abre /test para ver por que.');return}
+     const d=await r.json();typingOff();quitando();chat.lastChild.remove();botMsg(d)}
+ catch(e){typingOff();quitando();chat.lastChild.remove();pinta(false,'⚠️ Sin conexion con el servidor: '+e)}}
 function agregaToma(nom, hors){const d=document.createElement('div');d.style.margin='4px 0';d.innerHTML='<input placeholder="Medicamento (ej. Losartán 50mg)" style="width:60%;padding:6px" value="'+nom+'"> <input placeholder="Horas o momento: 08:00,20:00 / manana y noche / antes de dormir" style="width:30%;padding:6px" value="'+hors+'">';document.getElementById('ftomas').appendChild(d);}
 function normHoras(s){const map=[["antes de dormir","22:00"],["dormir","22:00"],["manana","08:00"],["mañana","08:00"],["mediodia","14:00"],["mediodía","14:00"],["tarde","17:00"],["noche","21:00"]];
  return s.split(/[,+&]/i).map(x=>x.trim().toLowerCase()).filter(x=>x).map(x=>{
@@ -903,7 +920,7 @@ document.getElementById('benv').onclick=()=>enviarTexto(document.getElementById(
 document.getElementById('bfoto').onclick=()=>document.getElementById('ffoto').click();
 function mandaFoto(f){if(!f)return;pinta(false,'📷 Recibí su foto. La estoy leyendo con calma, un momento por favor...');
  const fd=new FormData();fd.append('foto',f);fd.append('pac',pac());fd.append('lang',langPref==='auto'?'es':langPref);
- fetch('/api/foto',{method:'POST',body:fd}).then(r=>{if(!r.ok)throw new Error('foto '+r.status);return r.json()}).then(d=>{if(chat.lastChild)chat.lastChild.remove();if(d&&d.texto)botMsg(d);else pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')}).catch(()=>{if(chat.lastChild)chat.lastChild.remove();pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')});};
+ typingOn();fetch('/api/foto',{method:'POST',body:fd}).then(r=>{typingOff();if(!r.ok)throw new Error('foto '+r.status);return r.json()}).then(d=>{if(chat.lastChild)chat.lastChild.remove();if(d&&d.texto)botMsg(d);else pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')}).catch(()=>{typingOff();if(chat.lastChild)chat.lastChild.remove();pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')});};
 document.getElementById('ffoto').onchange=e=>mandaFoto(e.target.files[0]);
 window.addEventListener('dragover',function(e){e.preventDefault();});
 window.addEventListener('drop',function(e){e.preventDefault();const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];if(f&&f.type.indexOf('image/')===0)mandaFoto(f);});
