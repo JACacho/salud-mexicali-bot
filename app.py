@@ -65,9 +65,9 @@ def sb_guardar_lectura(pid, tipo, valores, triage, nota, canal):
 def sb_guardar_tomas(pid, meds):
     if not (SUPABASE_URL and SUPABASE_KEY and pid and meds): return
     try:
-        requests.delete(SUPABASE_URL + "/rest/v1/tomas", headers=_sb_headers(),
-                        params={"pac_id": "eq." + pid}, timeout=8)
         for nom, hors in meds.items():
+            requests.delete(SUPABASE_URL + "/rest/v1/tomas", headers=_sb_headers(),
+                            params={"pac_id": "eq." + pid, "medicamento": "eq." + nom}, timeout=8)
             for h in hors:
                 requests.post(SUPABASE_URL + "/rest/v1/tomas", headers=_sb_headers(),
                               json={"pac_id": pid, "medicamento": nom, "hora": h}, timeout=8)
@@ -180,7 +180,7 @@ def fallo(msg):
     if len(ERRORES) > 20: ERRORES.pop(0)
 
 SYSTEM = ("Responde SIEMPRE con frases completas (nunca cortadas a la mitad), maximo 3 frases cortas, separadas por renglones, con palabras sencillas para adultos mayores.\n"
-"Si el paciente menciona medicamentos, dosis u horarios, agrega al final una linea: MEDS: nombre=HH:MM,HH:MM; nombre2=HH:MM\n"
+"Si el paciente menciona medicamentos, dosis u horarios, agrega al final una linea: MEDS: nombre=HH:MM,HH:MM; nombre2=HH:MM. Convierte los momentos a horas: manana=08:00, mediodia=14:00, tarde=17:00, noche=21:00, antes de dormir=22:00. Si el paciente describe rutinas nuevas o cambios, actualiza MEDS: con todas sus medicinas conocidas.\n"
 "Si menciona a que hora se mide la presion o la glucosa, agrega: RUTINA: presion=HH:MM; glucosa=HH:MM\n"
 "Si el EXPEDIENTE aparece vacio (paciente nuevo), presentate con cariño y preguntale que medicamentos toma con sus horarios y a que hora se mide la presion.\n"
 "Eres 'Salud Mexicali', asistente calido de salud para adultos mayores con hipertension y diabetes.\n"
@@ -538,6 +538,7 @@ def api_registro():
                       json={"id": pid, "nombre": d.get("nombre", ""), "edad": d.get("edad") or None,
                             "sexo": d.get("sexo", ""), "diagnostico": d.get("diagnostico", ""),
                             "medicamentos": d.get("medicamentos", ""), "medico": d.get("medico", ""),
+                            "medico_tel": d.get("medico_tel", ""), "medico_mail": d.get("medico_mail", ""),
                             "toma_presion": bool(d.get("toma_presion", True)),
                             "mide_glucosa": bool(d.get("mide_glucosa", True)),
                             "cuidador_nombre": d.get("cuidador_nombre", ""),
@@ -590,7 +591,7 @@ def api_citas():
             sig = f"{ny}-{nm:02d}-01"
             r = requests.get(SUPABASE_URL + "/rest/v1/citas", headers=_sb_headers(),
                              params=[("pac_id", "eq." + pid), ("fecha", "gte." + mes),
-                                     ("fecha", "lt." + sig), ("select", "fecha,hora,lugar,doctor")], timeout=6)
+                                     ("fecha", "lt." + sig), ("select", "fecha,hora,lugar,doctor,notas")], timeout=6)
             items = r.json() if r.ok else []
         except Exception as e:
             fallo(f"supabase citas cal: {str(e)[:60]}")
@@ -741,6 +742,8 @@ body.alto #chat{background:#000}
 <label>Diagnóstico (ej. hipertensión, diabetes)<br><input id="fdiag" style="width:100%;padding:8px;font-size:1em"></label><br>
 <label>¿Se checa la presión? <input id="ftapres" type="checkbox" checked>  ¿Se mide la glucosa? <input id="fgluc" type="checkbox" checked></label><br>
 <label>Médico(s)<br><input id="fmed" style="width:100%;padding:8px;font-size:1em"></label><br>
+<label>Teléfono del médico<br><input id="fmedtel" style="width:100%;padding:8px;font-size:1em"></label><br>
+<label>Correo del médico<br><input id="fmedmail" type="email" style="width:100%;padding:8px;font-size:1em"></label><br>
 <b>Medicamentos y horarios</b>
 <div id="ftomas"></div>
 <button onclick="agregaToma('','')" style="margin:4px 0;padding:6px 12px;border-radius:8px;border:1px solid #0f274d;background:#fff">➕ Agregar medicamento</button><br>
@@ -749,7 +752,7 @@ body.alto #chat{background:#000}
 <label>Parentesco<br><input id="fcuipar" style="width:100%;padding:8px;font-size:1em"></label><br>
 <button id="fok" style="margin-top:8px;padding:10px 20px;font-size:1.1em;border:none;border-radius:10px;background:#0f274d;color:#fff">💾 Guardar mi expediente</button>
 </div>
-<div id="calpanel"><div style="text-align:center"><button onclick="calMes(-1)">⬅️</button> <b id="caltit"></b> <button onclick="calMes(1)">➡️</button></div><div id="calbody"></div></div>
+<div id="calpanel"><div style="text-align:center"><button onclick="calMes(-1)">⬅️</button> <b id="caltit"></b> <button onclick="calMes(1)">➡️</button></div><div id="calbody"></div><div id="caldet" style="margin-top:6px;font-size:.95em"></div></div>
 <div id="bar">
  <button id="bfoto">📷</button>
  <button id="bvoz">🎤</button>
@@ -764,20 +767,22 @@ let langPref='auto',fontScale=1,thinkT=null,thinkS=0,rec=null,chunks=[];
 function aplicarFuente(){document.documentElement.style.setProperty('--fs',(20*fontScale)+'px')}
 function pinta(q,t,cls){const aud=cls&&cls.length>100?cls:'';const d=document.createElement('div');d.className='b '+(q?'yo':'bot')+(aud?'':(cls||''));d.innerHTML=t;if(aud){const au=document.createElement('audio');au.controls=true;au.src='data:audio/mpeg;base64,'+aud;d.appendChild(au)}chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d}
 function leer(t){try{const u=new SpeechSynthesisUtterance(t.replace(/<[^>]*>/g,' '));u.lang='es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
-function pintaAviso(t,aud){pinta(false,t,aud);}
+function mandar(t){const i=document.querySelector('#chat input, input[placeholder*="Escribe"]');if(i){i.value=t;const b=i.closest('div').parentElement.querySelector('button:last-of-type')||document.getElementById('benv');if(b)b.click();}}
+function pintaAviso(t,aud){pinta(false,t+'<br><button onclick="mandar(\'ya tomé mi medicina\')" style="margin:4px;padding:8px 14px;border-radius:10px;border:none;background:#1b5e20;color:#fff;font-size:1em">✔ Ya tomé mi medicina</button><button onclick="mandar(\'ya me medí\')" style="margin:4px;padding:8px 14px;border-radius:10px;border:none;background:#0f274d;color:#fff;font-size:1em">✔ Ya me medí</button>',aud);}
 let calY=0,calM=0;
 function abreCal(){const p=document.getElementById('calpanel');p.style.display=p.style.display==='none'?'block':'none';if(p.style.display==='block'&&!calY){const h=new Date();calY=h.getFullYear();calM=h.getMonth();}pintaCal();}
 function calMes(d){calM+=d;if(calM<0){calM=11;calY--}if(calM>11){calM=0;calY++}pintaCal();}
 function initCal(){if(!calY){const h=new Date();calY=h.getFullYear();calM=h.getMonth();}pintaCal();}
 function pintaCal(){const d0=JSON.parse(pac()||'{}');const id=d0.t||d0.n||'';const mes=calY+'-'+String(calM+1).padStart(2,'0')+'-01';
  fetch('/api/citas?pac='+encodeURIComponent(id)+'&mes='+mes).then(r=>r.json()).then(d=>{
-    const dias={};(d.items||[]).forEach(c=>{const dd=Number(c.fecha.slice(8,10));dias[dd]=(dias[dd]||'')+'🩺';});
+     const dias={};window.diasDet={};(d.items||[]).forEach(c=>{const dd=Number(c.fecha.slice(8,10));dias[dd]=(dias[dd]||'')+'🩺';window.diasDet[dd]=(window.diasDet[dd]||[]).concat([c]);});
     document.getElementById('caltit').textContent=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'][calM]+' '+calY;
     const prim=new Date(calY,calM,1);const nd=new Date(calY,calM+1,0).getDate();let h='<table style="width:100%;text-align:center;font-size:1.15em;border-collapse:collapse"><tr>';
     ['D','L','M','M','J','V','S'].forEach(x=>h+='<th>'+x+'</th>');h+='</tr><tr>';
     for(let i=0;i<prim.getDay();i++)h+='<td></td>';
-    for(let dd=1;dd<=nd;dd++){h+='<td style="padding:8px;border:1px solid #ccc;'+(dias[dd]?'background:#ffd6d6;font-weight:bold':'')+'">'+dd+(dias[dd]||'')+'</td>';if((prim.getDay()+dd)%7===0)h+='</tr><tr>';}
+    for(let dd=1;dd<=nd;dd++){h+='<td '+(dias[dd]?'onclick="verDia('+dd+')" ':'')+'style="padding:8px;border:1px solid #ccc;'+(dias[dd]?'background:#ffd6d6;font-weight:bold;cursor:pointer':'')+'">'+dd+(dias[dd]||'')+'</td>';if((prim.getDay()+dd)%7===0)h+='</tr><tr>';}
     h+='</tr></table>';document.getElementById('calbody').innerHTML=h;}).catch(()=>{});}
+function verDia(d){const cs=window.diasDet&&window.diasDet[d]||[];document.getElementById('caldet').innerHTML=cs.length?cs.map(c=>'📅 Día '+d+': '+c.hora+' en '+c.lugar+' con '+c.doctor+'. '+(c.notas||'')).join('<br>'):'Sin citas ese día.';}
 function pensando(){quitando();pinta(false,'<span class="dots"><i></i><i></i><i></i></span> Trabajando en tu respuesta… <span id="tsec">0</span> s');thinkS=0;thinkT=setInterval(()=>{thinkS++;const e=document.getElementById('tsec');if(e)e.textContent=thinkS},1000)}
 function quitando(){if(thinkT){clearInterval(thinkT);thinkT=null}}
 function agregaAudio(el,texto,lang){fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({texto:texto,lang:lang})}).then(r=>r.json()).then(a=>{if(a.audio){const au=document.createElement('audio');au.controls=true;au.src='data:'+(a.mime||'audio/mpeg')+';base64,'+a.audio;el.appendChild(au);chat.scrollTop=chat.scrollHeight}}).catch(()=>{})}
@@ -789,15 +794,20 @@ async function api(url,body){pensando();
  if(!r.ok){quitando();chat.lastChild.remove();pinta(false,'⚠️ Error '+r.status+'. Abre /test para ver por que.');return}
     const d=await r.json();quitando();chat.lastChild.remove();botMsg(d)}
  catch(e){quitando();chat.lastChild.remove();pinta(false,'⚠️ Sin conexion con el servidor: '+e)}}
-function agregaToma(nom, hors){const d=document.createElement('div');d.style.margin='4px 0';d.innerHTML='<input placeholder="Medicamento (ej. Losartán 50mg)" style="width:60%;padding:6px" value="'+nom+'"> <input placeholder="Horas: 08:00,20:00" style="width:30%;padding:6px" value="'+hors+'">';document.getElementById('ftomas').appendChild(d);}
+function agregaToma(nom, hors){const d=document.createElement('div');d.style.margin='4px 0';d.innerHTML='<input placeholder="Medicamento (ej. Losartán 50mg)" style="width:60%;padding:6px" value="'+nom+'"> <input placeholder="Horas o momento: 08:00,20:00 / manana y noche / antes de dormir" style="width:30%;padding:6px" value="'+hors+'">';document.getElementById('ftomas').appendChild(d);}
+function normHoras(s){const map=[["antes de dormir","22:00"],["dormir","22:00"],["manana","08:00"],["mañana","08:00"],["mediodia","14:00"],["mediodía","14:00"],["tarde","17:00"],["noche","21:00"]];
+ return s.split(/[,+&]/i).map(x=>x.trim().toLowerCase()).filter(x=>x).map(x=>{
+     if(/^\d{1,2}(:\d{2})?$/.test(x)){return x.length<=2?x.padStart(2,"0")+":00":(x.length===4?x.slice(0,2)+":"+x.slice(2):x);}
+     for(const p of map){if(x.includes(p[0]))return p[1];}
+     return "";}).filter(x=>x);}
 function abreFicha(pref){const f=document.getElementById('ficha');f.style.display='block';if(!pref)return;const d0=JSON.parse(pac()||'{}');const id=d0.t||d0.n||'';if(!id)return;
  fetch('/api/expediente?pac='+encodeURIComponent(id)).then(r=>r.json()).then(d=>{const p=d.paciente||{};
-    document.getElementById('fnom').value=p.nombre||'';document.getElementById('ftel').value=id;document.getElementById('fedad').value=p.edad||'';document.getElementById('fsexo').value=p.sexo||'';document.getElementById('fdiag').value=p.diagnostico||'';document.getElementById('ftapres').checked=p.toma_presion!==false;document.getElementById('fgluc').checked=p.mide_glucosa!==false;document.getElementById('fmed').value=p.medico||'';document.getElementById('fcuinom').value=p.cuidador_nombre||'';document.getElementById('fcuitel').value=p.cuidador_tel||'';document.getElementById('fcuipar').value=p.cuidador_parentesco||'';
+        document.getElementById('fnom').value=p.nombre||'';document.getElementById('ftel').value=id;document.getElementById('fedad').value=p.edad||'';document.getElementById('fsexo').value=p.sexo||'';document.getElementById('fdiag').value=p.diagnostico||'';document.getElementById('ftapres').checked=p.toma_presion!==false;document.getElementById('fgluc').checked=p.mide_glucosa!==false;document.getElementById('fmed').value=p.medico||'';document.getElementById('fmedtel').value=p.medico_tel||'';document.getElementById('fmedmail').value=p.medico_mail||'';document.getElementById('fcuinom').value=p.cuidador_nombre||'';document.getElementById('fcuitel').value=p.cuidador_tel||'';document.getElementById('fcuipar').value=p.cuidador_parentesco||'';
     document.getElementById('ftomas').innerHTML='';const g={};(d.tomas||[]).forEach(t=>{g[t.medicamento]=g[t.medicamento]||[];g[t.medicamento].push(t.hora);});Object.keys(g).forEach(k=>agregaToma(k,g[k].join(',')));});}
 if(!pac()){document.getElementById('ficha').style.display='block'}
 document.getElementById('fok').onclick=()=>{const nom=document.getElementById('fnom').value.trim();const tel=document.getElementById('ftel').value.trim();if(!nom||!tel){alert('Por favor nombre y telefono, gracias.');return;}
- const tomas=[];document.querySelectorAll('#ftomas div').forEach(d=>{const i=d.querySelectorAll('input');const n=i[0].value.trim();const hs=i[1].value.split(',').map(x=>x.trim()).filter(x=>x);if(n&&hs.length)tomas.push({nombre:n,horas:hs});});
- const body={nombre:nom,tel:tel,edad:document.getElementById('fedad').value,sexo:document.getElementById('fsexo').value,diagnostico:document.getElementById('fdiag').value,toma_presion:document.getElementById('ftapres').checked,mide_glucosa:document.getElementById('fgluc').checked,medico:document.getElementById('fmed').value,cuidador_nombre:document.getElementById('fcuinom').value,cuidador_tel:document.getElementById('fcuitel').value,cuidador_parentesco:document.getElementById('fcuipar').value,tomas:tomas,medicamentos:tomas.map(t=>t.nombre+' '+t.horas.join(',')).join('; ')};
+ const tomas=[];document.querySelectorAll('#ftomas div').forEach(d=>{const i=d.querySelectorAll('input');const n=i[0].value.trim();const hs=normHoras(i[1].value);if(n&&hs.length)tomas.push({nombre:n,horas:hs});});
+ const body={nombre:nom,tel:tel,edad:document.getElementById('fedad').value,sexo:document.getElementById('fsexo').value,diagnostico:document.getElementById('fdiag').value,toma_presion:document.getElementById('ftapres').checked,mide_glucosa:document.getElementById('fgluc').checked,medico:document.getElementById('fmed').value,medico_tel:document.getElementById('fmedtel').value,medico_mail:document.getElementById('fmedmail').value,cuidador_nombre:document.getElementById('fcuinom').value,cuidador_tel:document.getElementById('fcuitel').value,cuidador_parentesco:document.getElementById('fcuipar').value,tomas:tomas,medicamentos:tomas.map(t=>t.nombre+' '+t.horas.join(',')).join('; ')};
  fetch('/api/registro',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(()=>{localStorage.setItem('pac',JSON.stringify({n:nom,t:tel}));document.getElementById('ficha').style.display='none';pintaNombre();initCal();pinta(false,'Gracias, '+nom+'. Su expediente queda guardado con carino. 💙');});};
 document.getElementById('txt').onkeydown=e=>{if(e.key==='Enter')document.getElementById('benv').click()};
 document.getElementById('benv').onclick=()=>{const t=document.getElementById('txt').value.trim();if(!t)return;
