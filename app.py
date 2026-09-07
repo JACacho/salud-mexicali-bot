@@ -459,11 +459,12 @@ def tts(texto, lang="es"):
     finally:
         loop.close()
 
-def finalizar(txt_crudo, canal, tipo, usuario, pid, nombre, lang):
+def finalizar(txt_crudo, canal, tipo, usuario, pid, nombre, lang, extra="", botones=None):
     p = registrar(pid, nombre)
     if not txt_crudo:
-        return jsonify({"texto": "No te escuche bien, intentalo otra vez por favor. / I didn't hear you well, please try again.", "triage": "normal", "valores": {}, "lang": lang})
+        return jsonify({"texto": "No te escuche bien, intentalo otra vez por favor. / I didn't hear you well, please try again.", "triage": "normal", "valores": {}, "lang": lang, "botones": botones or []})
     texto, triage, valores, meds, rut = limpiar(txt_crudo)
+    texto += extra
     recordar(p, tipo + " " + usuario + " -> " + triage + " " + json.dumps(valores))
     sb_guardar_lectura(pid, tipo, valores, triage, usuario, canal)
     if valores.get("ta") or valores.get("glucosa"):
@@ -473,7 +474,7 @@ def finalizar(txt_crudo, canal, tipo, usuario, pid, nombre, lang):
     sb_guardar_rutina(pid, rut)
     BITACORA.append({"ts": time.strftime("%Y-%m-%d %H:%M"), "canal": canal, "pac": pid,
                      "usuario": usuario, "bot": texto, "triage": triage, "valores": valores})
-    return jsonify({"texto": texto, "triage": triage, "valores": valores, "lang": lang})
+    return jsonify({"texto": texto, "triage": triage, "valores": valores, "lang": lang, "botones": botones or []})
 
 @app.route("/")
 def inicio():
@@ -534,6 +535,8 @@ def api_text():
     t = d.get("texto", "")
     n, tel = datos_pac(d.get("pac", ""))
     u = USU.setdefault(tel or n or "anon", {"msgs":0,"fotos":0,"voces":0}); u["msgs"] += 1
+    extra_n = ""
+    bot_n = None
     pid0 = tel or n or "anon"
     st = PEND.get(pid0)
     if st and st["tipo"] == "cual_med":
@@ -557,6 +560,10 @@ def api_text():
             return jsonify({"texto": msg, "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "botones": []})
     if st and st["tipo"] == "numeros":
         PEND.pop(pid0, None)
+        pm = sb_tomas_pendientes(pid0, solo_medicinas=True)
+        if pm:
+            extra_n = "\n\nPor cierto, " + (n or "don Antonio") + ": aún me falta saber de su medicina: " + ", ".join(o["medicamento"] + " (" + o["hora"] + ")" for o in pm) + ". ¿Ya la tomó?"
+            bot_n = ["tomé " + o["medicamento"] + " (" + o["hora"] + ")" for o in pm] + ["tomé todas mis medicinas"]
     if re.search(r"(tom[eé]|pastilla|medicamento)", t, re.I):
         pend = sb_tomas_pendientes(pid0, solo_medicinas=True)
         if len(pend) == 1:
@@ -573,7 +580,7 @@ def api_text():
         return jsonify({"texto": msg, "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "botones": []})
     lp = d.get("lang", "auto")
     lang = lp if lp in ("es", "en") else detectar_idioma(t)
-    return finalizar(generar_texto(contexto(tel or n) + "\nEl paciente escribe: " + t + sufijo_lang(lang), lang), "web", "texto", t, tel or n, n, lang)
+    return finalizar(generar_texto(contexto(tel or n) + "\nEl paciente escribe: " + t + sufijo_lang(lang), lang), "web", "texto", t, tel or n, n, lang, extra=extra_n, botones=bot_n)
 
 
 @app.route("/api/foto", methods=["POST"])
@@ -882,8 +889,12 @@ function mandar(t){enviarTexto(t);}
 document.getElementById('txt').onkeydown=e=>{if(e.key==='Enter')enviarTexto(e.target.value)};
 document.getElementById('benv').onclick=()=>enviarTexto(document.getElementById('txt').value);
 document.getElementById('bfoto').onclick=()=>document.getElementById('ffoto').click();
-document.getElementById('ffoto').onchange=e=>{const f=e.target.files[0];if(!f)return;pinta(true,'📷 (foto)');
+function mandaFoto(f){if(!f)return;pinta(true,'📷 (foto)');
  const fd=new FormData();fd.append('foto',f);fd.append('pac',pac());fd.append('lang',langPref==='auto'?'es':langPref);api('/api/foto',fd)};
+document.getElementById('ffoto').onchange=e=>mandaFoto(e.target.files[0]);
+window.addEventListener('dragover',function(e){e.preventDefault();});
+window.addEventListener('drop',function(e){e.preventDefault();const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];if(f&&f.type.indexOf('image/')===0)mandaFoto(f);});
+window.addEventListener('paste',function(e){const it=e.clipboardData&&e.clipboardData.items;for(let i=0;i<(it||[]).length;i++){if(it[i].type.indexOf('image/')===0){mandaFoto(it[i].getAsFile());break;}}});
 document.getElementById('bvoz').onclick=async()=>{
  if(rec){rec.stop();rec=null;document.getElementById('bvoz').textContent='🎤';return}
  document.getElementById('bvoz').textContent='⏹';chunks=[];
