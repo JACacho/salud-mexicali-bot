@@ -468,6 +468,7 @@ def finalizar(txt_crudo, canal, tipo, usuario, pid, nombre, lang):
     sb_guardar_lectura(pid, tipo, valores, triage, usuario, canal)
     if valores.get("ta") or valores.get("glucosa"):
         sb_confirmar_medicion(pid)
+        PEND.pop(pid, None)
     sb_guardar_tomas(pid, meds)
     sb_guardar_rutina(pid, rut)
     BITACORA.append({"ts": time.strftime("%Y-%m-%d %H:%M"), "canal": canal, "pac": pid,
@@ -536,14 +537,23 @@ def api_text():
     pid0 = tel or n or "anon"
     st = PEND.get(pid0)
     if st and st["tipo"] == "cual_med":
-        eleg = [o for o in st["opts"] if o["medicamento"].split()[0].lower() in (t or "").lower()]
-        if not eleg and (t or "").strip().isdigit():
-            ix = int((t or "").strip()) - 1
-            if 0 <= ix < len(st["opts"]): eleg = [st["opts"][ix]]
-        if eleg:
-            sb_confirmar_toma_id(pid0, eleg[0]["id"])
+        lowt = (t or "").lower()
+        if any(w in lowt for w in ["todas", "ambas", "las dos", "los dos", "todos"]):
+            for o in st["opts"]:
+                sb_confirmar_toma_id(pid0, o["id"])
             PEND.pop(pid0, None)
-            msg = "¡Qué bien, " + (n or "don Antonio") + "! Anoto con cariño su " + eleg[0]["medicamento"] + " de las " + eleg[0]["hora"] + " como tomado. 💙"
+            msg = "¡Excelente, " + (n or "don Antonio") + "! Anoto con cariño todas sus medicinas de hoy como tomadas. 💙"
+            return jsonify({"texto": msg, "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "botones": []})
+        eleg = [o for o in st["opts"] if o["medicamento"].split()[0].lower() in lowt]
+        if not eleg:
+            nums = re.findall(r"\d+", t or "")
+            if nums:
+                eleg = [st["opts"][int(x) - 1] for x in nums if 1 <= int(x) <= len(st["opts"])]
+        if eleg:
+            for o in eleg:
+                sb_confirmar_toma_id(pid0, o["id"])
+            PEND.pop(pid0, None)
+            msg = "¡Qué bien, " + (n or "don Antonio") + "! Anoto con cariño como tomado: " + ", ".join(o["medicamento"] + " (" + o["hora"] + ")" for o in eleg) + ". 💙"
             return jsonify({"texto": msg, "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "botones": []})
     if st and st["tipo"] == "numeros":
         PEND.pop(pid0, None)
@@ -556,10 +566,10 @@ def api_text():
         if len(pend) > 1:
             PEND[pid0] = {"tipo": "cual_med", "opts": pend}
             msg = "¡Me da gusto! ¿Cuál de sus medicinas tomó? Dígame el nombre o el número:\n" + "\n".join(str(i + 1) + ". " + o["medicamento"] + " (" + o["hora"] + ")" for i, o in enumerate(pend))
-            return jsonify({"texto": msg, "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "botones": ["tomé " + o["medicamento"] for o in pend]})
+            return jsonify({"texto": msg + "\nSi tomó varias, puede decirme los números o tocar: tomé todas mis medicinas.", "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "botones": ["tomé " + o["medicamento"] + " (" + o["hora"] + ")" for o in pend] + ["tomé todas mis medicinas"]})
     if re.search(r"(me med[ií]|me chequ[eé])", t, re.I):
         PEND[pid0] = {"tipo": "numeros"}
-        msg = "¡Muy bien! Dígame su numerito, por favor. Si fue presión, algo como 120/80; si fue glucosa, algo como 95."
+        msg = "¡Muy bien! Dígame su numerito, por favor. Si fue presión, algo como 120/80; si fue glucosa, algo como 95. También puede mandarme la foto de su aparato con el botón de camarita."
         return jsonify({"texto": msg, "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "botones": []})
     lp = d.get("lang", "auto")
     lang = lp if lp in ("es", "en") else detectar_idioma(t)
