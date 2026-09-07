@@ -62,6 +62,37 @@ def sb_guardar_lectura(pid, tipo, valores, triage, nota, canal):
     except Exception as e:
         fallo(f"supabase lectura: {str(e)[:60]}")
 
+PEND = {}
+
+def sb_tomas_pendientes(pid, solo_medicinas=False):
+    out = []
+    if not (SUPABASE_URL and SUPABASE_KEY and pid): return out
+    try:
+        r = requests.get(SUPABASE_URL + "/rest/v1/tomas", headers=_sb_headers(),
+                         params={"pac_id": "eq." + pid, "activo": "eq.true", "select": "id,medicamento,hora"}, timeout=6)
+        tomas = r.json() if r.ok else []
+        hoy = time.strftime("%Y-%m-%d")
+        ok = requests.get(SUPABASE_URL + "/rest/v1/tomas_ok", headers=_sb_headers(),
+                          params={"pac_id": "eq." + pid, "fecha": "eq." + hoy, "select": "toma_id"}, timeout=6)
+        done = set(str(x["toma_id"]) for x in (ok.json() if ok.ok else []))
+        for t in tomas:
+            if str(t["id"]) in done: continue
+            esmed = not any(k in t["medicamento"].lower() for k in ["presion", "presión", "glucosa", "chequeo", "medicion", "medición"])
+            if solo_medicinas and not esmed: continue
+            if not solo_medicinas and esmed: continue
+            out.append(t)
+    except Exception as e:
+        fallo(f"supabase pendientes: {str(e)[:60]}")
+    return out
+
+def sb_confirmar_toma_id(pid, tid):
+    if not (SUPABASE_URL and SUPABASE_KEY and pid): return
+    try:
+        requests.post(SUPABASE_URL + "/rest/v1/tomas_ok", headers=_sb_headers(),
+                      json={"pac_id": pid, "toma_id": tid, "fecha": time.strftime("%Y-%m-%d")}, timeout=6)
+    except Exception as e:
+        fallo(f"supabase confirmar id: {str(e)[:60]}")
+
 def sb_guardar_tomas(pid, meds):
     if not (SUPABASE_URL and SUPABASE_KEY and pid and meds): return
     try:
@@ -502,8 +533,34 @@ def api_text():
     t = d.get("texto", "")
     n, tel = datos_pac(d.get("pac", ""))
     u = USU.setdefault(tel or n or "anon", {"msgs":0,"fotos":0,"voces":0}); u["msgs"] += 1
+    pid0 = tel or n or "anon"
+    st = PEND.get(pid0)
+    if st and st["tipo"] == "cual_med":
+        eleg = [o for o in st["opts"] if o["medicamento"].split()[0].lower() in (t or "").lower()]
+        if not eleg and (t or "").strip().isdigit():
+            ix = int((t or "").strip()) - 1
+            if 0 <= ix < len(st["opts"]): eleg = [st["opts"][ix]]
+        if eleg:
+            sb_confirmar_toma_id(pid0, eleg[0]["id"])
+            PEND.pop(pid0, None)
+            msg = "¡Qué bien, " + (n or "don Antonio") + "! Anoto con cariño su " + eleg[0]["medicamento"] + " de las " + eleg[0]["hora"] + " como tomado. 💙"
+            return jsonify({"texto": msg, "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "botones": []})
+    if st and st["tipo"] == "numeros":
+        PEND.pop(pid0, None)
     if re.search(r"(tom[eé]|pastilla|medicamento)", t, re.I):
-        sb_confirmar_toma(tel or n, t)
+        pend = sb_tomas_pendientes(pid0, solo_medicinas=True)
+        if len(pend) == 1:
+            sb_confirmar_toma_id(pid0, pend[0]["id"])
+            msg = "¡Qué bien, " + (n or "don Antonio") + "! Anoto con cariño su " + pend[0]["medicamento"] + " de las " + pend[0]["hora"] + " como tomado. 💙"
+            return jsonify({"texto": msg, "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "botones": []})
+        if len(pend) > 1:
+            PEND[pid0] = {"tipo": "cual_med", "opts": pend}
+            msg = "¡Me da gusto! ¿Cuál de sus medicinas tomó? Dígame el nombre o el número:\n" + "\n".join(str(i + 1) + ". " + o["medicamento"] + " (" + o["hora"] + ")" for i, o in enumerate(pend))
+            return jsonify({"texto": msg, "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "botones": ["tomé " + o["medicamento"] for o in pend]})
+    if re.search(r"(me med[ií]|me chequ[eé])", t, re.I):
+        PEND[pid0] = {"tipo": "numeros"}
+        msg = "¡Muy bien! Dígame su numerito, por favor. Si fue presión, algo como 120/80; si fue glucosa, algo como 95."
+        return jsonify({"texto": msg, "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "botones": []})
     lp = d.get("lang", "auto")
     lang = lp if lp in ("es", "en") else detectar_idioma(t)
     return finalizar(generar_texto(contexto(tel or n) + "\nEl paciente escribe: " + t + sufijo_lang(lang), lang), "web", "texto", t, tel or n, n, lang)
@@ -788,7 +845,8 @@ function quitando(){if(thinkT){clearInterval(thinkT);thinkT=null}}
 function agregaAudio(el,texto,lang){fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({texto:texto,lang:lang})}).then(r=>r.json()).then(a=>{if(a.audio){const au=document.createElement('audio');au.controls=true;au.src='data:'+(a.mime||'audio/mpeg')+';base64,'+a.audio;el.appendChild(au);chat.scrollTop=chat.scrollHeight}}).catch(()=>{})}
 function botMsg(d){const t=(d.texto||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\\n/g,'<br>');
  const el=pinta(false,t,d.triage==='critico'?' crit':'');
- if(d.texto)agregaAudio(el,d.texto,d.lang||'es')}
+ if(d.texto)agregaAudio(el,d.texto,d.lang||'es');
+ if(d.botones&&d.botones.length){pinta(false,d.botones.map(b=>`<button onclick="mandar('${b}')" style="margin:4px;padding:8px 14px;border-radius:10px;border:none;background:#0f274d;color:#fff;font-size:1em">${b}</button>`).join(''))}}
 async function api(url,body){pensando();
  try{const r=await fetch(url,{method:'POST',body});
  if(!r.ok){quitando();chat.lastChild.remove();pinta(false,'⚠️ Error '+r.status+'. Abre /test para ver por que.');return}
