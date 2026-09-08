@@ -376,20 +376,53 @@ def generar_texto(prompt, lang):
         if t: return t
     return None
 
+import io as _io
+from PIL import Image
+
+def comprimir_img(datos, maxw=900, q=72):
+    try:
+        im = Image.open(_io.BytesIO(datos))
+        if im.width > maxw:
+            im = im.resize((maxw, int(im.height * maxw / im.width)))
+        buf = _io.BytesIO()
+        im.convert("RGB").save(buf, "JPEG", quality=q)
+        return buf.getvalue()
+    except Exception:
+        return datos
+
+def parseo_monitor(t):
+    t = t or ""
+    ta = re.search(r"ta\s*=\s*(\d{2,3})\s*/\s*(\d{2,3})", t, re.I)
+    pu = re.search(r"pulso\s*=\s*(\d{2,3})", t, re.I)
+    gl = re.search(r"glucosa\s*=\s*(\d{2,3})", t, re.I)
+    if not ta and not gl:
+        nums = re.findall(r"\b(\d{2,3})\b", t)
+        if len(nums) >= 3:
+            ta = re.match("", "")
+            return "VALORES: ta=" + nums[0] + "/" + nums[1] + ", pulso=" + nums[2]
+        if len(nums) == 1:
+            return "VALORES: glucosa=" + nums[0]
+    out = "VALORES:"
+    if ta: out += " ta=" + ta.group(1) + "/" + ta.group(2)
+    if pu: out += ", pulso=" + pu.group(1)
+    if gl: out += ", glucosa=" + gl.group(1)
+    return out if out != "VALORES:" else t
+
 def generar_foto(b64, mime, lang):
     datos = base64.b64decode(b64)
     pregunta = "Lee este monitor de salud y responde SOLO con la linea: VALORES: ta=SIST/DIAST, pulso=P, glucosa=G (solo los que veas)."
     for cli, nom in ((cliente_gemini_a, "gemini_a"), (cliente_gemini_b, "gemini_b")):
-        for mod in ("gemini-2.5-flash", "gemini-2.0-flash"):
+        for mod in MODELOS_GEMINI:
             try:
                 resp = cli.models.generate_content(model=mod, contents=[types.Part.from_bytes(data=datos, mime_type=mime or "image/jpeg"), pregunta])
                 t = (resp.text or "").strip()
-                if t: return t
+                if t: return parseo_monitor(t)
             except Exception as e:
                 fallo(f"{nom}/{mod} foto: {str(e)[:60]}")
     url_img = "data:" + (mime or "image/jpeg") + ";base64," + b64
     msgs = [{"role": "user", "content": [{"type": "text", "text": pregunta}, {"type": "image_url", "image_url": {"url": url_img}}]}]
-    for nom, key, url, mods in (("tokenrouter", TR_KEY, TR_URL, ["google/gemini-3.5-flash", "z-ai/glm-4.6v", "deepseek/deepseek-v4-flash-vision-exp"]),
+    for nom, key, url, mods in (("tokenrouter", TR_KEY, TR_URL, ["z-ai/glm-4.6v"]),
+                                ("huggingface", HF_KEY, HF_URL, ["Qwen/Qwen2.5-VL-7B-Instruct", "meta-llama/Llama-3.2-11B-Vision-Instruct"]),
                                 ("openrouter", OR_KEY, "https://openrouter.ai/api/v1/chat/completions", ["google/gemini-2.5-flash", "openai/gpt-5.4-mini"])):
         if not key: continue
         for mod in mods:
@@ -397,7 +430,7 @@ def generar_foto(b64, mime, lang):
                 r = requests.post(url, headers={"Authorization": "Bearer " + key}, json={"model": mod, "messages": msgs, "max_tokens": 300}, timeout=25)
                 r.raise_for_status()
                 t = (r.json()["choices"][0]["message"]["content"] or "").strip()
-                if t: return t
+                if t: return parseo_monitor(t)
             except Exception as e:
                 fallo(f"{nom}/{mod} foto: {str(e)[:60]}")
     return None
@@ -603,7 +636,8 @@ def api_foto():
             bot_n = ["tomé " + o["medicamento"] + " (" + o["hora"] + ")" for o in pm] + ["tomé todas mis medicinas"]
         u = USU.setdefault(tel or n or "anon", {"msgs":0,"fotos":0,"voces":0}); u["fotos"] += 1
         lang = request.form.get("lang", "es")
-        b64 = base64.b64encode(f.read()).decode()
+        datos = comprimir_img(f.read())
+        b64 = base64.b64encode(datos).decode()
         crudo = generar_foto(b64, f.mimetype or "image/jpeg", lang)
         if not crudo:
             raise RuntimeError("vision sin resultado")
