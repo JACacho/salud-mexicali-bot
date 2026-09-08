@@ -3,6 +3,7 @@ import requests
 from flask import Flask, request, jsonify
 from google import genai
 from google.genai import types as gtypes
+from google.genai import types
 
 app = Flask(__name__)
 
@@ -376,41 +377,29 @@ def generar_texto(prompt, lang):
     return None
 
 def generar_foto(b64, mime, lang):
-    t = gemini_gen([{"text": "El paciente manda una FOTO de su aparato de medicion. Lee con cuidado los numeros y acompana." + sufijo_lang(lang)},
-                    gtypes.Part.from_bytes(data=base64.b64decode(b64), mime_type=mime)], cliente_gemini_a, "gemini_a", lang)
-    if t: return t
-    t = gemini_gen([{"text": "El paciente manda una FOTO de su aparato de medicion. Lee con cuidado los numeros y acompana." + sufijo_lang(lang)},
-                    gtypes.Part.from_bytes(data=base64.b64decode(b64), mime_type=mime)], cliente_gemini_b, "gemini_b", lang)
-    if t: return t
-    if GROQ_KEY:
-        for mod in ["llama-3.2-90b-vision-preview", "llama-3.2-11b-vision-preview"]:
+    datos = base64.b64decode(b64)
+    pregunta = "Lee este monitor de salud y responde SOLO con la linea: VALORES: ta=SIST/DIAST, pulso=P, glucosa=G (solo los que veas)."
+    for cli, nom in ((cliente_gemini_a, "gemini_a"), (cliente_gemini_b, "gemini_b")):
+        for mod in ("gemini-2.5-flash", "gemini-2.0-flash"):
             try:
-                r = requests.post("https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": "Bearer " + GROQ_KEY},
-                    json={"model": mod, "messages": [
-                        {"role": "system", "content": SYSTEM},
-                        {"role": "user", "content": [
-                            {"type": "text", "text": "Lee los numeros de esta foto de un tensiometro o glucometro y acompana."},
-                            {"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + b64}}]}]}, timeout=45)
-                r.raise_for_status()
-                contar("groq")
-                return r.json()["choices"][0]["message"]["content"]
+                resp = cli.models.generate_content(model=mod, contents=[types.Part.from_bytes(data=datos, mime_type=mime or "image/jpeg"), pregunta])
+                t = (resp.text or "").strip()
+                if t: return t
             except Exception as e:
-                fallo(f"groq vision/{mod}: {str(e)[:60]}")
-    if OR_KEY:
-        for mod in ["meta-llama/llama-3.2-90b-vision-instruct:free", "google/gemini-2.0-flash-001"]:
+                fallo(f"{nom}/{mod} foto: {str(e)[:60]}")
+    url_img = "data:" + (mime or "image/jpeg") + ";base64," + b64
+    msgs = [{"role": "user", "content": [{"type": "text", "text": pregunta}, {"type": "image_url", "image_url": {"url": url_img}}]}]
+    for nom, key, url, mods in (("tokenrouter", TR_KEY, TR_URL, ["google/gemini-3.5-flash", "z-ai/glm-4.6v", "deepseek/deepseek-v4-flash-vision-exp"]),
+                                ("openrouter", OR_KEY, "https://openrouter.ai/api/v1/chat/completions", ["google/gemini-2.5-flash", "openai/gpt-5.4-mini"])):
+        if not key: continue
+        for mod in mods:
             try:
-                r = requests.post("https://openrouter.ai/api/v1/chat/completions",
-                    headers={"Authorization": "Bearer " + OR_KEY},
-                    json={"model": mod, "messages": [
-                        {"role": "system", "content": SYSTEM},
-                        {"role": "user", "content": [
-                            {"type": "text", "text": "Lee los numeros de esta foto de un tensiometro o glucometro y acompana."},
-                            {"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + b64}}]}]}, timeout=45)
+                r = requests.post(url, headers={"Authorization": "Bearer " + key}, json={"model": mod, "messages": msgs, "max_tokens": 300}, timeout=25)
                 r.raise_for_status()
-                return r.json()["choices"][0]["message"]["content"]
+                t = (r.json()["choices"][0]["message"]["content"] or "").strip()
+                if t: return t
             except Exception as e:
-                fallo(f"openrouter vision/{mod}: {str(e)[:60]}")
+                fallo(f"{nom}/{mod} foto: {str(e)[:60]}")
     return None
 
 def generar_voz(audio, mime, lang):
@@ -471,7 +460,7 @@ def finalizar(txt_crudo, canal, tipo, usuario, pid, nombre, lang, extra="", boto
             msg = "No te escuche bien, intentalo otra vez por favor. / I didn't hear you well, please try again."
         else:
             msg = "No pude procesar su mensaje esta vez. Intente de nuevo, por favor."
-        return jsonify({"texto": msg, "triage": "normal", "valores": {}, "lang": lang, "botones": botones or []})
+        return jsonify({"texto": msg, "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "lang": lang, "botones": botones or []})
     texto, triage, valores, meds, rut = limpiar(txt_crudo)
     texto += extra
     h = int(time.strftime("%H"))
@@ -491,7 +480,7 @@ def finalizar(txt_crudo, canal, tipo, usuario, pid, nombre, lang, extra="", boto
     sb_guardar_rutina(pid, rut)
     BITACORA.append({"ts": time.strftime("%Y-%m-%d %H:%M"), "canal": canal, "pac": pid,
                      "usuario": usuario, "bot": texto, "triage": triage, "valores": valores})
-    return jsonify({"texto": texto, "triage": triage, "valores": valores, "lang": lang, "botones": botones or []})
+    return jsonify({"texto": texto, "audio": tts(texto_voz(texto)) or "", "triage": triage, "valores": valores, "lang": lang, "botones": botones or []})
 
 @app.route("/")
 def inicio():
@@ -747,7 +736,8 @@ def recordatorios():
                 out.append({"id": -1, "texto": aviso, "audio": tts(texto_voz(aviso)) or ""})
         except Exception as e:
             fallo(f"supabase recordatorios: {str(e)[:60]}")
-    return jsonify({"items": out, "nombre": nombre})
+    texto_audio = out[0]["texto"] if out else ""
+    return jsonify({"items": out, "nombre": nombre, "audio": tts(texto_voz(texto_audio)) or ""})
 
 @app.route("/webhook", methods=["GET"])
 def verificar():
