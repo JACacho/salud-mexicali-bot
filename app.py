@@ -411,19 +411,15 @@ def parseo_monitor(t):
 def generar_foto(b64, mime, lang):
     datos = base64.b64decode(b64)
     pregunta = "Lee este monitor de salud y responde SOLO con la linea: VALORES: ta=SIST/DIAST, pulso=P, glucosa=G (solo los que veas)."
+    parte_img = gtypes.Part.from_bytes(data=datos, mime_type=mime or "image/jpeg")
     for cli, nom in ((cliente_gemini_a, "gemini_a"), (cliente_gemini_b, "gemini_b")):
-        for mod in MODELOS_GEMINI:
-            try:
-                resp = cli.models.generate_content(model=mod, contents=[types.Part.from_bytes(data=datos, mime_type=mime or "image/jpeg"), pregunta])
-                t = (resp.text or "").strip()
-                if t: return parseo_monitor(t)
-            except Exception as e:
-                fallo(f"{nom}/{mod} foto: {str(e)[:60]}")
+        t = gemini_gen([{"text": pregunta}, parte_img], cli, nom, lang)
+        if t: return parseo_monitor(t)
     url_img = "data:" + (mime or "image/jpeg") + ";base64," + b64
     msgs = [{"role": "user", "content": [{"type": "text", "text": pregunta}, {"type": "image_url", "image_url": {"url": url_img}}]}]
     for nom, key, url, mods in (("tokenrouter", TR_KEY, TR_URL, ["z-ai/glm-4.6v"]),
                                 ("huggingface", HF_KEY, HF_URL, ["Qwen/Qwen2.5-VL-7B-Instruct", "meta-llama/Llama-3.2-11B-Vision-Instruct"]),
-                                ("openrouter", OR_KEY, "https://openrouter.ai/api/v1/chat/completions", ["google/gemini-2.5-flash", "openai/gpt-5.4-mini"])):
+                                ("openrouter", OR_KEY, "https://openrouter.ai/api/v1/chat/completions", ["openai/gpt-5.4-mini", "google/gemini-2.5-flash"])):
         if not key: continue
         for mod in mods:
             try:
@@ -900,14 +896,15 @@ let langPref='auto',fontScale=1,thinkT=null,thinkS=0,rec=null,chunks=[];
 function aplicarFuente(){document.documentElement.style.setProperty('--fs',(20*fontScale)+'px')}
 function pinta(q,t,cls){const aud=cls&&cls.length>100?cls:'';const d=document.createElement('div');d.className='b '+(q?'yo':'bot')+(aud?'':(cls||''));d.innerHTML=t;if(aud){const au=document.createElement('audio');au.controls=true;au.src='data:audio/mpeg;base64,'+aud;d.appendChild(au)}chat.appendChild(d);const au=d.querySelector('audio');if(au){if(window._yaToco){au.play().catch(()=>{});}else{window._audPend=au;}}chat.scrollTop=chat.scrollHeight;return d}
 function textoVozJS(t){return (t||'').replace(/[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}\\u{2B00}-\\u{2BFF}\\u{1F1E6}-\\u{1F1FF}\\u{2764}\\u{2665}\\u{2705}]/gu,'').replace(/\\s+/g,' ').trim();}
-function leer(t){try{const u=new SpeechSynthesisUtterance(textoVozJS(t));u.lang='es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
+function vozFem(){try{const vs=speechSynthesis.getVoices();return vs.find(v=>/Dalia|Mónica|Monica|Paulina|Sabina|Elvira|female/i.test(v.name))||vs.find(v=>(v.lang||'').toLowerCase().startsWith('es'))||null;}catch(e){return null;}}
+function leer(t){try{const u=new SpeechSynthesisUtterance(textoVozJS(t));const v=vozFem();if(v)u.voice=v;u.lang=v?v.lang:'es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
 window._avisoPend=null;window._audPend=null;window._yaToco=false;
-function leerAuto(t){window._avisoPend=t;try{const u=new SpeechSynthesisUtterance(textoVozJS(t));u.lang='es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);window._avisoPend=null;}catch(e){}}
+function leerAuto(t){window._avisoPend=t;try{const u=new SpeechSynthesisUtterance(textoVozJS(t));const v=vozFem();if(v)u.voice=v;u.lang=v?v.lang:'es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);window._avisoPend=null;}catch(e){}}
 ['pointerdown','keydown','touchstart'].forEach(ev=>window.addEventListener(ev,function(){window._yaToco=true;if(window._avisoPend){leer(window._avisoPend);window._avisoPend=null;}if(window._audPend){window._audPend.play().catch(()=>{});window._audPend=null;}}));
 function pintaAviso(t,aud){pinta(false,t+`<br><button onclick="mandar('ya tomé mi medicina')" style="margin:4px;padding:8px 14px;border-radius:10px;border:none;background:#1b5e20;color:#fff;font-size:1em">✔ Ya tomé mi medicina</button><button onclick="mandar('ya me medí')" style="margin:4px;padding:8px 14px;border-radius:10px;border:none;background:#0f274d;color:#fff;font-size:1em">✔ Ya me medí</button>`,aud);}
 function typingOn(){typingOff();const d=document.createElement('div');d.className='msg bot typing';d.id='typing';d.innerHTML='<span></span><span></span><span></span> <small id="crono">0s</small>';document.getElementById('chat').appendChild(d);d.scrollIntoView({behavior:'smooth'});
  window._crono=0;window._cronoI=setInterval(()=>{window._crono++;const s=document.getElementById('crono');if(s)s.textContent=window._crono+'s';},1000);
- try{const u=new SpeechSynthesisUtterance('Recibí su información. La estoy revisando con calma, un momento por favor.');u.lang='es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
+ try{const u=new SpeechSynthesisUtterance('Recibí su información. La estoy revisando con calma, un momento por favor.');const v=vozFem();if(v)u.voice=v;u.lang=v?v.lang:'es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
 function typingOff(){const d=document.getElementById('typing');if(d)d.remove();if(window._cronoI){clearInterval(window._cronoI);window._cronoI=null;}}
 let calY=0,calM=0;
 function abreCal(){const p=document.getElementById('calpanel');p.style.display=p.style.display==='none'?'block':'none';if(p.style.display==='block'&&!calY){const h=new Date();calY=h.getFullYear();calM=h.getMonth();}pintaCal();}
@@ -980,7 +977,7 @@ let evtI=null;
 window.addEventListener('beforeinstallprompt',e=>{evtI=e;document.getElementById('inst').style.display='block'});
 document.getElementById('inst').onclick=async()=>{if(evtI){evtI.prompt();document.getElementById('inst').style.display='none'}};
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js');
-(function(){const d0=JSON.parse(pac()||'{}');const id=d0.t||d0.n||'';if(id){fetch('/api/recordatorios?pac='+encodeURIComponent(id)).then(r=>r.json()).then(d=>{if(d.nombre){const q=document.getElementById('quien');if(q)q.textContent=d.nombre;} (d.items||[]).forEach(x=>pintaAviso(x.texto,x.audio));if(d.items&&d.items[0])leerAuto(d.items[0].texto);}).catch(()=>{});}})();
+(function(){const d0=JSON.parse(pac()||'{}');const id=d0.t||d0.n||'';if(id){fetch('/api/recordatorios?pac='+encodeURIComponent(id)).then(r=>r.json()).then(d=>{if(d.nombre){const q=document.getElementById('quien');if(q)q.textContent=d.nombre;} (d.items||[]).forEach(x=>pintaAviso(x.texto,x.audio));}).catch(()=>{});}})();
 initCal();
 fetch('/api/bienvenida').then(r=>r.json()).then(d=>pinta(false,d.texto,d.audio)).catch(()=>pinta(false,'Hola, soy su asistente de salud. ❤️'));
 </script>
