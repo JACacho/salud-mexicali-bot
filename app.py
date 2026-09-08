@@ -211,6 +211,7 @@ def fallo(msg):
     if len(ERRORES) > 20: ERRORES.pop(0)
 
 SYSTEM = ("Responde SIEMPRE con frases completas (nunca cortadas a la mitad), maximo 3 frases cortas, separadas por renglones, con palabras sencillas para adultos mayores.\n"
+"Cuando leas una foto del aparato o recibas valores, la PRIMERA frase de tu respuesta debe ser el valor mismo, por ejemplo: 'Su presión fue 152/76 con pulso de 52.' o 'Su glucosa fue 95.' Después continúa con el acompañamiento cariñoso.\n"
 "Si el paciente menciona medicamentos, dosis u horarios, agrega al final una linea: MEDS: nombre=HH:MM,HH:MM; nombre2=HH:MM. Convierte los momentos a horas: manana=08:00, mediodia=14:00, tarde=17:00, noche=21:00, antes de dormir=22:00. Si el paciente describe rutinas nuevas o cambios, actualiza MEDS: con todas sus medicinas conocidas.\n"
 "Si menciona a que hora se mide la presion o la glucosa, agrega: RUTINA: presion=HH:MM; glucosa=HH:MM\n"
 "Si el EXPEDIENTE aparece vacio (paciente nuevo), presentate con cariño y preguntale que medicamentos toma con sus horarios y a que hora se mide la presion.\n"
@@ -605,13 +606,19 @@ def api_foto():
         contar("web"); contar("fotos")
         f = request.files.get("foto")
         n, tel = datos_pac(request.form.get("pac", ""))
+        extra_n = ""
+        bot_n = None
+        pm = sb_tomas_pendientes(tel or n, solo_medicinas=True)
+        if pm:
+            extra_n = "\n\nPor cierto, " + (n or "don Antonio") + ": aún me falta saber de su medicina: " + ", ".join(o["medicamento"] + " (" + o["hora"] + ")" for o in pm) + ". ¿Ya la tomó?"
+            bot_n = ["tomé " + o["medicamento"] + " (" + o["hora"] + ")" for o in pm] + ["tomé todas mis medicinas"]
         u = USU.setdefault(tel or n or "anon", {"msgs":0,"fotos":0,"voces":0}); u["fotos"] += 1
         lang = request.form.get("lang", "es")
         b64 = base64.b64encode(f.read()).decode()
         crudo = generar_foto(b64, f.mimetype or "image/jpeg", lang)
         if not crudo:
             raise RuntimeError("vision sin resultado")
-        return finalizar(crudo, "web", "foto", "(foto)", tel or n, n, lang)
+        return finalizar(crudo, "web", "foto", "(foto)", tel or n, n, lang, extra=extra_n, botones=bot_n)
     except Exception as e:
         fallo(f"foto: {str(e)[:60]}")
         msg = "No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza."
