@@ -222,7 +222,8 @@ SYSTEM = ("Responde SIEMPRE con frases completas (nunca cortadas a la mitad), ma
 "Si es critico: pide con carino que se vuelva a medir en 5 minutos sentado y avisa que notificaras a su familia.\n"
 "Al final agrega SIEMPRE, en lineas separadas, exactamente:\n"
 "TRIAGE:normal  (o TRIAGE:moderado o TRIAGE:critico)\n"
-"VALORES: ta=SIST/DIAST, pulso=P, glucosa=G, hora=HH:MM (solo los que aparezcan; si el paciente dice a qué hora se midió, pon esa hora en hora=). Al responder, menciona con cariño el pulso si lo hay, y di si es por la mañana, por la tarde o por la noche según la hora actual que aparece en el contexto.")
+"VALORES: ta=SIST/DIAST, pulso=P, glucosa=G, hora=HH:MM (solo los que aparezcan; si el paciente dice a qué hora se midió, pon esa hora en hora=). Al responder, menciona con cariño el pulso si lo hay, y di si es por la mañana, por la tarde o por la noche según la hora actual que aparece en el contexto.\n"
+"SIEMPRE menciona TODOS los valores que el paciente envió: presión arterial (sistólica/diastólica), pulso y glucosa. Nunca omitas la presión ni la glucosa si aparecen en VALORES. Ejemplo: Su presión salió en 152/76 con pulso de 68, eso es...\n")
 
 def detectar_idioma(t):
     t = (t or "").lower()
@@ -869,8 +870,10 @@ function aplicarFuente(){document.documentElement.style.setProperty('--fs',(20*f
 function pinta(q,t,cls){const aud=cls&&cls.length>100?cls:'';const d=document.createElement('div');d.className='b '+(q?'yo':'bot')+(aud?'':(cls||''));d.innerHTML=t;if(aud){const au=document.createElement('audio');au.controls=true;au.src='data:audio/mpeg;base64,'+aud;d.appendChild(au)}chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d}
 function leer(t){try{const u=new SpeechSynthesisUtterance(t.replace(/<[^>]*>/g,' '));u.lang='es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
 function pintaAviso(t,aud){pinta(false,t+`<br><button onclick="mandar('ya tomé mi medicina')" style="margin:4px;padding:8px 14px;border-radius:10px;border:none;background:#1b5e20;color:#fff;font-size:1em">✔ Ya tomé mi medicina</button><button onclick="mandar('ya me medí')" style="margin:4px;padding:8px 14px;border-radius:10px;border:none;background:#0f274d;color:#fff;font-size:1em">✔ Ya me medí</button>`,aud);}
-function typingOn(){typingOff();const d=document.createElement('div');d.className='msg bot typing';d.id='typing';d.innerHTML='<span></span><span></span><span></span>';document.getElementById('chat').appendChild(d);d.scrollIntoView({behavior:'smooth'});}
-function typingOff(){const d=document.getElementById('typing');if(d)d.remove();}
+function typingOn(){typingOff();const d=document.createElement('div');d.className='msg bot typing';d.id='typing';d.innerHTML='<span></span><span></span><span></span> <small id="crono">0s</small>';document.getElementById('chat').appendChild(d);d.scrollIntoView({behavior:'smooth'});
+ window._crono=0;window._cronoI=setInterval(()=>{window._crono++;const s=document.getElementById('crono');if(s)s.textContent=window._crono+'s';},1000);
+ try{const u=new SpeechSynthesisUtterance('Recibí su información. La estoy revisando con calma, un momento por favor.');u.lang='es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
+function typingOff(){const d=document.getElementById('typing');if(d)d.remove();if(window._cronoI){clearInterval(window._cronoI);window._cronoI=null;}}
 let calY=0,calM=0;
 function abreCal(){const p=document.getElementById('calpanel');p.style.display=p.style.display==='none'?'block':'none';if(p.style.display==='block'&&!calY){const h=new Date();calY=h.getFullYear();calM=h.getMonth();}pintaCal();}
 function calMes(d){calM+=d;if(calM<0){calM=11;calY--}if(calM>11){calM=0;calY++}pintaCal();}
