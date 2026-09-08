@@ -195,7 +195,7 @@ def _mk_client(k):
 cliente_gemini_a = _mk_client(GEMINI_KEY_A)
 cliente_gemini_b = _mk_client(GEMINI_KEY_B)
 
-MODELOS_GEMINI = ["gemini-3-flash", "gemini-3-flash-preview", "gemini-3-pro", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.5-flash"]
+MODELOS_GEMINI = ["gemini-3-flash-preview", "gemini-3-pro-preview", "gemini-3-flash", "gemini-2.5-flash"]
 MODELOS_GROQ = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
 
 USO = {"gemini_a":0,"gemini_b":0,"groq":0,"web":0,"whatsapp":0,"fotos":0,"voces":0,"audios":0}
@@ -408,9 +408,31 @@ def parseo_monitor(t):
     if gl: out += ", glucosa=" + gl.group(1)
     return out if out != "VALORES:" else t
 
+def ocr_space(b64, mime):
+    key = os.getenv("OCR_KEY", "")
+    if not key: return None
+    try:
+        r = requests.post("https://api.ocr.space/parse/image",
+            headers={"apikey": key},
+            files={"file": ("foto.jpg", base64.b64decode(b64), mime or "image/jpeg")},
+            data={"language": "spa", "OCREngine": 2, "scale": "true"},
+            timeout=20)
+        r.raise_for_status()
+        pr = (r.json().get("ParsedResults") or [{}])[0]
+        txt = pr.get("ParsedText") or ""
+        return txt or None
+    except Exception as e:
+        fallo(f"ocr.space: {str(e)[:60]}")
+        return None
+
 def generar_foto(b64, mime, lang):
     datos = base64.b64decode(b64)
     pregunta = "Lee este monitor de salud y responde SOLO con la linea: VALORES: ta=SIST/DIAST, pulso=P, glucosa=G (solo los que veas)."
+    t0 = ocr_space(b64, mime)
+    if t0:
+        p0 = parseo_monitor(t0)
+        if p0 and p0.startswith("VALORES:"):
+            return p0
     parte_img = gtypes.Part.from_bytes(data=datos, mime_type=mime or "image/jpeg")
     for cli, nom in ((cliente_gemini_a, "gemini_a"), (cliente_gemini_b, "gemini_b")):
         t = gemini_gen([{"text": pregunta}, parte_img], cli, nom, lang)
@@ -423,7 +445,7 @@ def generar_foto(b64, mime, lang):
         if not key: continue
         for mod in mods:
             try:
-                r = requests.post(url, headers={"Authorization": "Bearer " + key}, json={"model": mod, "messages": msgs, "max_tokens": 300}, timeout=25)
+                r = requests.post(url, headers={"Authorization": "Bearer " + key}, json={"model": mod, "messages": msgs, "max_tokens": 300}, timeout=15)
                 r.raise_for_status()
                 t = (r.json()["choices"][0]["message"]["content"] or "").strip()
                 if t: return parseo_monitor(t)
