@@ -408,6 +408,17 @@ def parseo_monitor(t):
     if gl: out += ", glucosa=" + gl.group(1)
     return out if out != "VALORES:" else t
 
+def triage_de(v):
+    try: s = int(v.get("ta", "").split("/")[0])
+    except Exception: s = 0
+    try: d = int(v.get("ta", "").split("/")[1])
+    except Exception: d = 0
+    try: g = int(v.get("glucosa", ""))
+    except Exception: g = 0
+    if s>=160 or g>250 or (0<g<70): return "critico"
+    if s>=140 or d>=90 or g>180: return "moderado"
+    return "normal"
+
 def ocr_space(b64, mime):
     key = os.getenv("OCR_KEY", "")
     if not key:
@@ -440,8 +451,15 @@ def generar_foto(b64, mime, lang):
             return p0
     parte_img = gtypes.Part.from_bytes(data=datos, mime_type=mime or "image/jpeg")
     for cli, nom in ((cliente_gemini_a, "gemini_a"), (cliente_gemini_b, "gemini_b")):
-        t = gemini_gen([{"text": pregunta}, parte_img], cli, nom, lang)
-        if t: return parseo_monitor(t)
+        for mod in MODELOS_GEMINI:
+            try:
+                resp = cli.models.generate_content(model=mod, contents=[{"role":"user","parts":[{"text": pregunta + " Responde unicamente con esa linea, sin comentarios."}, parte_img]}], config=gtypes.GenerateContentConfig(max_output_tokens=200))
+                t = (resp.text or "").strip()
+                if t:
+                    contar(nom)
+                    return parseo_monitor(t)
+            except Exception as e:
+                fallo(f"{nom}/{mod} foto: {str(e)[:60]}")
     url_img = "data:" + (mime or "image/jpeg") + ";base64," + b64
     msgs = [{"role": "user", "content": [{"type": "text", "text": pregunta}, {"type": "image_url", "image_url": {"url": url_img}}]}]
     for nom, key, url, mods in (("tokenrouter", TR_KEY, TR_URL, ["z-ai/glm-4.6v"]),
@@ -662,6 +680,18 @@ def api_foto():
         datos = comprimir_img(f.read())
         b64 = base64.b64encode(datos).decode()
         crudo = generar_foto(b64, f.mimetype or "image/jpeg", lang)
+        if crudo:
+            _, _, val0, _, _ = limpiar(crudo)
+            if val0.get("ta") or val0.get("glucosa"):
+                h = int(time.strftime("%H"))
+                mom = "por la mañana" if h < 12 else ("por la tarde" if h < 19 else "por la noche")
+                partes = []
+                if val0.get("ta"): partes.append("Su presión fue " + val0["ta"] + (" con pulso de " + val0["pulso"] if val0.get("pulso") else ""))
+                if val0.get("glucosa"): partes.append("Su glucosa fue " + val0["glucosa"])
+                tr = triage_de(val0)
+                cierre = "Está dentro de lo esperado, gracias por cuidarse." if tr == "normal" else ("Está un poco alta, le sugiero descansar y volver a medirse en un rato." if tr == "moderado" else "Está alta: siéntese, respire tranquilo y vuelva a medirse en 5 minutos; avisaré a su familia.")
+                msg = ". ".join(partes) + ", " + mom + ". " + cierre
+                crudo = msg + "\nTRIAGE:" + tr + "\nVALORES: " + ", ".join(k + "=" + v for k, v in val0.items())
         if not crudo:
             raise RuntimeError("vision sin resultado")
         fallo("foto crudo: " + repr(crudo)[:80])
