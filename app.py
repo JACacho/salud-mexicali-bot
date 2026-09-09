@@ -684,13 +684,13 @@ def api_foto():
             _, _, val0, _, _ = limpiar(crudo)
             if val0.get("ta") or val0.get("glucosa"):
                 h = int(time.strftime("%H"))
-                mom = "por la mañana" if h < 12 else ("por la tarde" if h < 19 else "por la noche")
-                partes = []
-                if val0.get("ta"): partes.append("Su presión fue " + val0["ta"] + (" con pulso de " + val0["pulso"] if val0.get("pulso") else ""))
-                if val0.get("glucosa"): partes.append("Su glucosa fue " + val0["glucosa"])
+                mom = "por la manana" if h < 12 else ("por la tarde" if h < 19 else "por la noche")
+                partes_msg = []
+                if val0.get("ta"): partes_msg.append("Su presion fue " + val0["ta"] + (" con pulso de " + val0["pulso"] if val0.get("pulso") else ""))
+                if val0.get("glucosa"): partes_msg.append("Su glucosa fue " + val0["glucosa"])
                 tr = triage_de(val0)
-                cierre = "Está dentro de lo esperado, gracias por cuidarse." if tr == "normal" else ("Está un poco alta, le sugiero descansar y volver a medirse en un rato." if tr == "moderado" else "Está alta: siéntese, respire tranquilo y vuelva a medirse en 5 minutos; avisaré a su familia.")
-                msg = ". ".join(partes) + ", " + mom + ". " + cierre
+                cierre = "Esta dentro de lo esperado, gracias por cuidarse." if tr == "normal" else ("Esta un poco alta, le sugiero descansar y volver a medirse en un rato." if tr == "moderado" else "Esta alta: sientese, respire tranquilo y vuelva a medirse en 5 minutos.")
+                msg = ". ".join(partes_msg) + ", " + mom + ". " + cierre
                 crudo = msg + "\nTRIAGE:" + tr + "\nVALORES: " + ", ".join(k + "=" + v for k, v in val0.items())
         if not crudo:
             raise RuntimeError("vision sin resultado")
@@ -955,7 +955,7 @@ function aplicarFuente(){document.documentElement.style.setProperty('--fs',(20*f
 function pinta(q,t,cls){const aud=cls&&cls.length>100?cls:'';const d=document.createElement('div');d.className='b '+(q?'yo':'bot')+(aud?'':(cls||''));d.innerHTML=t;if(aud){const au=document.createElement('audio');au.controls=true;au.src='data:audio/mpeg;base64,'+aud;d.appendChild(au)}chat.appendChild(d);const au=d.querySelector('audio');if(au){if(window._yaToco){au.play().catch(()=>{});}else{window._audPend=au;}}chat.scrollTop=chat.scrollHeight;return d}
 function textoVozJS(t){return (t||'').replace(/[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}\\u{2B00}-\\u{2BFF}\\u{1F1E6}-\\u{1F1FF}\\u{2764}\\u{2665}\\u{2705}]/gu,'').replace(/\\s+/g,' ').trim();}
 function vozFem(){try{const vs=speechSynthesis.getVoices();return vs.find(v=>/Dalia|Mónica|Monica|Paulina|Sabina|Elvira|female/i.test(v.name))||vs.find(v=>(v.lang||'').toLowerCase().startsWith('es'))||null;}catch(e){return null;}}
-function leer(t){fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({texto:t,lang:'es'})}).then(r=>r.json()).then(a=>{if(a.audio){const au=new Audio('data:audio/mpeg;base64,'+a.audio);au.play().catch(()=>{});}}).catch(()=>{});}
+function leer(t){try{const u=new SpeechSynthesisUtterance(textoVozJS(t));const v=vozFem();if(v)u.voice=v;u.lang=v?v.lang:'es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
 window._avisoPend=null;window._audPend=null;window._yaToco=false;
 function leerAuto(t){window._avisoPend=t;try{const u=new SpeechSynthesisUtterance(textoVozJS(t));const v=vozFem();if(v)u.voice=v;u.lang=v?v.lang:'es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);window._avisoPend=null;}catch(e){}}
 ['pointerdown','keydown','touchstart'].forEach(ev=>window.addEventListener(ev,function(){window._yaToco=true;if(window._avisoPend){leer(window._avisoPend);window._avisoPend=null;}if(window._audPend){window._audPend.play().catch(()=>{});window._audPend=null;}}));
@@ -981,7 +981,7 @@ function pintaCal(){const d0=JSON.parse(pac()||'{}');const id=d0.t||d0.n||'';con
 function verDia(d){const cs=window.diasDet&&window.diasDet[d]||[];document.getElementById('caldet').innerHTML=cs.length?cs.map(c=>'📅 Día '+d+': '+c.hora+' en '+c.lugar+' con '+c.doctor+'. '+(c.notas||'')).join('<br>'):'Sin citas ese día.';}
 function pensando(){quitando();pinta(false,'<span class="dots"><i></i><i></i><i></i></span> Trabajando en tu respuesta… <span id="tsec">0</span> s');thinkS=0;thinkT=setInterval(()=>{thinkS++;const e=document.getElementById('tsec');if(e)e.textContent=thinkS},1000)}
 function quitando(){if(thinkT){clearInterval(thinkT);thinkT=null}}
-function agregaAudio(el,texto,lang){fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({texto:texto,lang:lang})}).then(r=>r.json()).then(a=>{if(a.audio){const au=document.createElement('audio');au.controls=true;au.src='data:'+(a.mime||'audio/mpeg')+';base64,'+a.audio;el.appendChild(au);au.play().catch(()=>{});chat.scrollTop=chat.scrollHeight}}).catch(()=>{})}
+function agregaAudio(el,texto,lang){fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({texto:texto,lang:lang})}).then(r=>r.json()).then(a=>{if(a.audio){const au=document.createElement('audio');au.controls=true;au.src='data:'+(a.mime||'audio/mpeg')+';base64,'+a.audio;el.appendChild(au);chat.scrollTop=chat.scrollHeight}}).catch(()=>{})}
 function botMsg(d){const t=(d.texto||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\\n/g,'<br>');
  const el=pinta(false,t,d.triage==='critico'?' crit':'');
  if(d.texto)agregaAudio(el,d.texto,d.lang||'es');
@@ -1011,8 +1011,7 @@ function mandar(t){enviarTexto(t);}
 document.getElementById('txt').onkeydown=e=>{if(e.key==='Enter')enviarTexto(e.target.value)};
 document.getElementById('benv').onclick=()=>enviarTexto(document.getElementById('txt').value);
 document.getElementById('bfoto').onclick=()=>document.getElementById('ffoto').click();
-function mandaFoto(f){if(!f)return;const elAviso=pinta(false,'📷 Recibí su foto. La estoy leyendo con calma, un momento por favor...');
- agregaAudio(elAviso,'Recibí su foto. La estoy leyendo con calma, un momento por favor.','es');
+function mandaFoto(f){if(!f)return;pinta(false,'📷 Recibí su foto. La estoy leyendo con calma, un momento por favor...');
  const fd=new FormData();fd.append('foto',f);fd.append('pac',pac());fd.append('lang',langPref==='auto'?'es':langPref);
  typingOn();fetch('/api/foto',{method:'POST',body:fd}).then(r=>{typingOff();if(!r.ok)throw new Error('foto '+r.status);return r.json()}).then(d=>{if(chat.lastChild)chat.lastChild.remove();if(d&&d.texto)botMsg(d);else pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')}).catch(()=>{typingOff();if(chat.lastChild)chat.lastChild.remove();pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')});};
 document.getElementById('ffoto').onchange=e=>mandaFoto(e.target.files[0]);
