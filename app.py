@@ -1,6 +1,7 @@
 import os, re, json, time, base64, threading, asyncio, tempfile, uuid, traceback
 import requests
 from flask import Flask, request, jsonify
+from werkzeug.exceptions import HTTPException
 from google import genai
 from google.genai import types as gtypes
 from google.genai import types
@@ -9,6 +10,8 @@ app = Flask(__name__)
 
 @app.errorhandler(Exception)
 def manejar_error(e):
+    if isinstance(e, HTTPException):
+        return e
     tb = traceback.format_exc()
     fallo("EXC: " + tb[-400:])
     return jsonify({"error": str(e), "tb": tb[-600:]}), 500
@@ -419,6 +422,15 @@ def triage_de(v):
     if s>=140 or d>=90 or g>180: return "moderado"
     return "normal"
 
+def hora_amable(hhmm):
+    try:
+        h = int(str(hhmm)[:2]); m = str(hhmm)[3:5] or "00"
+    except Exception:
+        return str(hhmm)
+    p = "manana" if h < 12 else ("tarde" if h < 19 else "noche")
+    h12 = h % 12 or 12
+    return (str(h12) if m == "00" else str(h12) + ":" + m) + " de la " + p
+
 def ocr_space(b64, mime):
     key = os.getenv("OCR_KEY", "")
     if not key:
@@ -445,33 +457,55 @@ def generar_foto(b64, mime, lang):
     datos = base64.b64decode(b64)
     pregunta = "Lee este monitor de tensiometro o glucometro y responde UNICAMENTE con la linea: VALORES: ta=SIST/DIAST, pulso=P, glucosa=G (solo los numeros que veas en la pantalla, sin comentarios)."
     parte_img = gtypes.Part.from_bytes(data=datos, mime_type=mime or "image/jpeg")
+    url_img = "data:" + (mime or "image/jpeg") + ";base64," + b64
+    msgs = [{"role": "user", "content": [{"type": "text", "text": pregunta}, {"type": "image_url", "image_url": {"url": url_img}}]}]
+    def ok(t):
+        p = parseo_monitor(t) if t else ""
+        return p if (p and "VALORES:" in p and __import__('re').search(r"\d", p)) else ""
     for cli, nom in ((cliente_gemini_a, "gemini_a"), (cliente_gemini_b, "gemini_b")):
         if not cli: continue
         for mod in ("gemini-3-flash-preview", "gemini-3-pro-preview"):
             for cfg in (gtypes.GenerateContentConfig(max_output_tokens=1024, thinking_config=gtypes.ThinkingConfig(thinking_budget=0)), gtypes.GenerateContentConfig(max_output_tokens=1024)):
                 try:
-                    resp = cli.models.generate_content(model=mod, contents=[{"role":"user","parts":[{"text": pregunta}, parte_img]}], config=cfg)
-                    t = (resp.text or "").strip()
-                    p = parseo_monitor(t) if t else ""
-                    if p and "VALORES:" in p and re.search(r"\d", p):
-                        contar(nom)
-                        return p
-                    fallo(f"{nom}/{mod} foto sin numeros: {t[:40]}")
+                    resp = cli.models.generate_content(model=mod, contents=[{"role": "user", "parts": [{"text": pregunta}, parte_img]}], config=cfg)
+                    p = ok((resp.text or "").strip())
+                    if p:
+                        contar(nom); return p
                 except Exception as e:
-                    fallo(f"{nom}/{mod} foto: {str(e)[:50]}")
+                    fallo(f"{nom}/{mod} foto: {str(e)[:40]}")
+    if GROQ_KEY:
+        for mod in ("meta-llama/llama-4-scout-17b-16e-instruct", "meta-llama/llama-4-maverick-17b-128e-instruct"):
+            try:
+                r = requests.post("https://api.groq.com/openai/v1/chat/completions", headers={"Authorization": "Bearer " + GROQ_KEY}, json={"model": mod, "messages": msgs, "max_tokens": 300}, timeout=15)
+                r.raise_for_status()
+                p = ok((r.json()["choices"][0]["message"]["content"] or "").strip())
+                if p:
+                    contar("groq"); return p
+                fallo(f"groq/{mod} foto sin numeros")
+            except Exception as e:
+                fallo(f"groq/{mod} foto: {str(e)[:40]}")
+    if HF_KEY:
+        for mod in ("Qwen/Qwen2.5-VL-7B-Instruct", "meta-llama/Llama-3.2-11B-Vision-Instruct"):
+            try:
+                r = requests.post(HF_URL, headers={"Authorization": "Bearer " + HF_KEY}, json={"model": mod, "messages": msgs, "max_tokens": 300}, timeout=20)
+                r.raise_for_status()
+                p = ok((r.json()["choices"][0]["message"]["content"] or "").strip())
+                if p:
+                    contar("huggingface"); return p
+                fallo(f"hf/{mod} foto sin numeros")
+            except Exception as e:
+                fallo(f"hf/{mod} foto: {str(e)[:40]}")
     if OR_KEY:
-        try:
-            url_img = "data:" + (mime or "image/jpeg") + ";base64," + b64
-            r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": "Bearer " + OR_KEY}, json={"model": "openai/gpt-5.4-mini", "messages": [{"role":"user","content":[{"type":"text","text":pregunta},{"type":"image_url","image_url":{"url":url_img}}]}], "max_tokens": 600}, timeout=20)
-            r.raise_for_status()
-            t = (r.json()["choices"][0]["message"]["content"] or "").strip()
-            p = parseo_monitor(t) if t else ""
-            if p and "VALORES:" in p and re.search(r"\d", p):
-                contar("openrouter")
-                return p
-            fallo(f"openrouter foto sin numeros: {t[:40]}")
-        except Exception as e:
-            fallo(f"openrouter foto: {str(e)[:50]}")
+        for mod in ("meta-llama/llama-3.2-11b-vision-instruct:free", "qwen/qwen2.5-vl-32b-instruct:free", "openai/gpt-5.4-mini"):
+            try:
+                r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": "Bearer " + OR_KEY}, json={"model": mod, "messages": msgs, "max_tokens": 600}, timeout=20)
+                r.raise_for_status()
+                p = ok((r.json()["choices"][0]["message"]["content"] or "").strip())
+                if p:
+                    contar("openrouter"); return p
+                fallo(f"or/{mod} foto sin numeros")
+            except Exception as e:
+                fallo(f"or/{mod} foto: {str(e)[:40]}")
     return None
 
 def generar_voz(audio, mime, lang):
@@ -634,24 +668,24 @@ def api_text():
             for o in eleg:
                 sb_confirmar_toma_id(pid0, o["id"])
             PEND.pop(pid0, None)
-            msg = "¡Qué bien, " + (n or "don Antonio") + "! Anoto con cariño como tomado: " + ", ".join(o["medicamento"] + " (" + o["hora"] + ")" for o in eleg) + ". 💙"
+            msg = "¡Qué bien, " + (n or "don Antonio") + "! Anoto con cariño como tomado: " + ", ".join(o["medicamento"] + " (" + hora_amable(o["hora"]) + ")" for o in eleg) + ". 💙"
             return jsonify({"texto": msg, "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "botones": []})
     if st and st["tipo"] == "numeros":
         PEND.pop(pid0, None)
         pm = sb_tomas_pendientes(pid0, solo_medicinas=True)
         if pm:
-            extra_n = "\n\nPor cierto, " + (n or "don Antonio") + ": aún me falta saber de su medicina: " + ", ".join(o["medicamento"] + " (" + o["hora"] + ")" for o in pm) + ". ¿Ya la tomó?"
-            bot_n = ["tomé " + o["medicamento"] + " (" + o["hora"] + ")" for o in pm] + ["tomé todas mis medicinas"]
+            extra_n = "\n\nPor cierto, " + (n or "don Antonio") + ": aún me falta saber de su medicina: " + ", ".join(o["medicamento"] + " (" + hora_amable(o["hora"]) + ")" for o in pm) + ". ¿Ya la tomó?"
+            bot_n = ["tomé " + o["medicamento"] + " (" + hora_amable(o["hora"]) + ")" for o in pm] + ["tomé todas mis medicinas"]
     if re.search(r"(tom[eé]|pastilla|medicamento)", t, re.I):
         pend = sb_tomas_pendientes(pid0, solo_medicinas=True)
         if len(pend) == 1:
             sb_confirmar_toma_id(pid0, pend[0]["id"])
-            msg = "¡Qué bien, " + (n or "don Antonio") + "! Anoto con cariño su " + pend[0]["medicamento"] + " de las " + pend[0]["hora"] + " como tomado. 💙"
+            msg = "¡Qué bien, " + (n or "don Antonio") + "! Anoto con cariño su " + pend[0]["medicamento"] + " de las " + hora_amable(pend[0]["hora"]) + " como tomado. 💙"
             return jsonify({"texto": msg, "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "botones": []})
         if len(pend) > 1:
             PEND[pid0] = {"tipo": "cual_med", "opts": pend}
-            msg = "¡Me da gusto! ¿Cuál de sus medicinas tomó? Dígame el nombre o el número:\n" + "\n".join(str(i + 1) + ". " + o["medicamento"] + " (" + o["hora"] + ")" for i, o in enumerate(pend))
-            return jsonify({"texto": msg + "\nSi tomó varias, puede decirme los números o tocar: tomé todas mis medicinas.", "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "botones": ["tomé " + o["medicamento"] + " (" + o["hora"] + ")" for o in pend] + ["tomé todas mis medicinas"]})
+            msg = "¡Me da gusto! ¿Cuál de sus medicinas tomó? Dígame el nombre o el número:\n" + "\n".join(str(i + 1) + ". " + o["medicamento"] + " (" + hora_amable(o["hora"]) + ")" for i, o in enumerate(pend))
+            return jsonify({"texto": msg + "\nSi tomó varias, puede decirme los números o tocar: tomé todas mis medicinas.", "audio": tts(texto_voz(msg)) or "", "triage": "normal", "valores": {}, "botones": ["tomé " + o["medicamento"] + " (" + hora_amable(o["hora"]) + ")" for o in pend] + ["tomé todas mis medicinas"]})
     if re.search(r"(me med[ií]|me chequ[eé])", t, re.I):
         PEND[pid0] = {"tipo": "numeros"}
         msg = "¡Muy bien! Dígame su numerito, por favor. Si fue presión, algo como 120/80; si fue glucosa, algo como 95. También puede mandarme la foto de su aparato con el botón de camarita."
@@ -671,8 +705,8 @@ def api_foto():
         bot_n = None
         pm = sb_tomas_pendientes(tel or n, solo_medicinas=True)
         if pm:
-            extra_n = "\n\nPor cierto, " + (n or "don Antonio") + ": aún me falta saber de su medicina: " + ", ".join(o["medicamento"] + " (" + o["hora"] + ")" for o in pm) + ". ¿Ya la tomó?"
-            bot_n = ["tomé " + o["medicamento"] + " (" + o["hora"] + ")" for o in pm] + ["tomé todas mis medicinas"]
+            extra_n = "\n\nPor cierto, " + (n or "don Antonio") + ": aún me falta saber de su medicina: " + ", ".join(o["medicamento"] + " (" + hora_amable(o["hora"]) + ")" for o in pm) + ". ¿Ya la tomó?"
+            bot_n = ["tomé " + o["medicamento"] + " (" + hora_amable(o["hora"]) + ")" for o in pm] + ["tomé todas mis medicinas"]
         u = USU.setdefault(tel or n or "anon", {"msgs":0,"fotos":0,"voces":0}); u["fotos"] += 1
         lang = request.form.get("lang", "es")
         datos = comprimir_img(f.read())
@@ -798,14 +832,14 @@ def recordatorios():
             def es_med(m): return not any(k in m.lower() for k in ["presion", "presión", "glucosa", "chequeo", "medicion", "medición"])
             def frase(t):
                 if es_med(t["medicamento"]):
-                    return "su " + t["medicamento"] + " de las " + t["hora"] + ". ¿Me cuenta si ya lo tomo? Lo anoto con cariño."
-                return "su chequeo de las " + t["hora"] + ". ¿Ya se midio? Mandeme el numerito y lo guardo en su bitacora."
+                    return "su " + t["medicamento"] + " de las " + hora_amable(t["hora"]) + ". ¿Me cuenta si ya lo tomo? Lo anoto con cariño."
+                return "su chequeo de las " + hora_amable(t["hora"]) + ". ¿Ya se midio? Mandeme el numerito y lo guardo en su bitacora."
             lineas = []
             g_ayer = [t for t in tomas if (str(t["id"]), ayer) not in done]
             g_man = [t for t in tomas if t["hora"] < "12:00" and (str(t["id"]), hoy) not in done]
             g_tar = [t for t in tomas if t["hora"] >= "12:00" and (str(t["id"]), hoy) not in done]
             if g_ayer:
-                lineas.append("• Ayer quedo pendiente: " + "; ".join(t["medicamento"] + " (" + t["hora"] + ")" for t in g_ayer) + ". ¿Me cuenta si lo tomo?")
+                lineas.append("• Ayer quedo pendiente: " + "; ".join(t["medicamento"] + " (" + hora_amable(t["hora"]) + ")" for t in g_ayer) + ". ¿Me cuenta si lo tomo?")
             if g_man:
                 lineas.append("• Hoy por la manana: " + "; ".join(frase(t) for t in g_man))
             if g_tar:
@@ -1012,7 +1046,9 @@ function mandar(t){enviarTexto(t);}
 document.getElementById('txt').onkeydown=e=>{if(e.key==='Enter')enviarTexto(e.target.value)};
 document.getElementById('benv').onclick=()=>enviarTexto(document.getElementById('txt').value);
 document.getElementById('bfoto').onclick=()=>document.getElementById('ffoto').click();
-function mandaFoto(f){if(!f)return;const elAviso=pinta(false,'📷 Recibí su foto. La estoy leyendo con calma, un momento por favor...');
+window._fotoCola=Promise.resolve();
+function mandaFoto(f){if(!f)return;window._fotoCola=window._fotoCola.then(()=>procesaFoto(f));}
+async function procesaFoto(f){if(!f)return;const elAviso=pinta(false,'📷 Recibí su foto. La estoy leyendo con calma, un momento por favor...');
  const fd=new FormData();fd.append('foto',f);fd.append('pac',pac());fd.append('lang',langPref==='auto'?'es':langPref);
  typingOn();fetch('/api/foto',{method:'POST',body:fd}).then(r=>{typingOff();if(!r.ok)throw new Error('foto '+r.status);return r.json()}).then(d=>{elAviso.remove();if(d&&d.texto)botMsg(d);else pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')}).catch(()=>{typingOff();elAviso.remove();pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')});};
 document.getElementById('ffoto').onchange=e=>{for(const f of e.target.files)mandaFoto(f);e.target.value='';};
