@@ -448,22 +448,26 @@ def generar_foto(b64, mime, lang):
     for intento in (1, 2):
         for cli, nom in ((cliente_gemini_a, "gemini_a"), (cliente_gemini_b, "gemini_b")):
             try:
-                resp = cli.models.generate_content(model="gemini-3-flash-preview", contents=[{"role":"user","parts":[{"text": pregunta}, parte_img]}], config=gtypes.GenerateContentConfig(max_output_tokens=200))
+                resp = cli.models.generate_content(model="gemini-3-flash-preview", contents=[{"role":"user","parts":[{"text": pregunta}, parte_img]}], config=gtypes.GenerateContentConfig(max_output_tokens=1024, thinking_config=gtypes.ThinkingConfig(thinking_budget=0)))
                 t = (resp.text or "").strip()
-                if t:
+                p = parseo_monitor(t) if t else ""
+                if p and "VALORES:" in p and re.search(r"\d", p):
                     contar(nom)
-                    return parseo_monitor(t)
+                    return p
+                fallo(f"{nom} foto sin numeros: {t[:40]}")
             except Exception as e:
                 fallo(f"{nom}/preview intento{intento} foto: {str(e)[:50]}")
     if OR_KEY:
         try:
             url_img = "data:" + (mime or "image/jpeg") + ";base64," + b64
-            r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": "Bearer " + OR_KEY}, json={"model": "openai/gpt-5.4-mini", "messages": [{"role":"user","content":[{"type":"text","text":pregunta},{"type":"image_url","image_url":{"url":url_img}}]}], "max_tokens": 200}, timeout=20)
+            r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": "Bearer " + OR_KEY}, json={"model": "openai/gpt-5.4-mini", "messages": [{"role":"user","content":[{"type":"text","text":pregunta},{"type":"image_url","image_url":{"url":url_img}}]}], "max_tokens": 600}, timeout=20)
             r.raise_for_status()
             t = (r.json()["choices"][0]["message"]["content"] or "").strip()
-            if t:
+            p = parseo_monitor(t) if t else ""
+            if p and "VALORES:" in p and re.search(r"\d", p):
                 contar("openrouter")
-                return parseo_monitor(t)
+                return p
+            fallo(f"openrouter foto sin numeros: {t[:40]}")
         except Exception as e:
             fallo(f"openrouter foto: {str(e)[:50]}")
     return None
