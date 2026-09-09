@@ -1,3 +1,11 @@
+<input type="file" id="ffoto" accept="image/*" hidden>
+
+
+function mandaFoto(f){if(!f)return;const elAviso=pinta(false,'📷 Recibí su foto. La estoy leyendo con calma, un momento por favor...');
+ const fd=new FormData();fd.append('foto',f);fd.append('pac',pac());fd.append('lang',langPref==='auto'?'es':langPref);
+ typingOn();fetch('/api/foto',{method:'POST',body:fd}).then(r=>{typingOff();if(!r.ok)throw new Error('foto '+r.status);return r.json()}).then(d=>{elAviso.remove();if(d&&d.texto)botMsg(d);else pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')}).catch(()=>{typingOff();elAviso.remove();pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')});};
+document.getElementById('ffoto').onchange=e=>{for(const f of e.target.files)mandaFoto(f);e.target.value='';};
+ document.getElementById('bfoto').onclick=()=>document.getElementById('ffoto').click();
 import os, re, json, time, base64, threading, asyncio, tempfile, uuid, traceback
 import requests
 from flask import Flask, request, jsonify
