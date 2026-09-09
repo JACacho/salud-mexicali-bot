@@ -443,37 +443,29 @@ def ocr_space(b64, mime):
 
 def generar_foto(b64, mime, lang):
     datos = base64.b64decode(b64)
-    pregunta = "Lee este monitor de salud y responde SOLO con la linea: VALORES: ta=SIST/DIAST, pulso=P, glucosa=G (solo los que veas)."
-    t0 = ocr_space(b64, mime)
-    if t0:
-        p0 = parseo_monitor(t0)
-        if p0 and p0.startswith("VALORES:"):
-            return p0
+    pregunta = "Lee este monitor de tensiometro o glucometro y responde UNICAMENTE con la linea: VALORES: ta=SIST/DIAST, pulso=P, glucosa=G (solo los numeros que veas en la pantalla, sin comentarios)."
     parte_img = gtypes.Part.from_bytes(data=datos, mime_type=mime or "image/jpeg")
-    for cli, nom in ((cliente_gemini_a, "gemini_a"), (cliente_gemini_b, "gemini_b")):
-        for mod in MODELOS_GEMINI:
+    for intento in (1, 2):
+        for cli, nom in ((cliente_gemini_a, "gemini_a"), (cliente_gemini_b, "gemini_b")):
             try:
-                resp = cli.models.generate_content(model=mod, contents=[{"role":"user","parts":[{"text": pregunta + " Responde unicamente con esa linea, sin comentarios."}, parte_img]}], config=gtypes.GenerateContentConfig(max_output_tokens=200))
+                resp = cli.models.generate_content(model="gemini-3-flash-preview", contents=[{"role":"user","parts":[{"text": pregunta}, parte_img]}], config=gtypes.GenerateContentConfig(max_output_tokens=200))
                 t = (resp.text or "").strip()
                 if t:
                     contar(nom)
                     return parseo_monitor(t)
             except Exception as e:
-                fallo(f"{nom}/{mod} foto: {str(e)[:60]}")
-    url_img = "data:" + (mime or "image/jpeg") + ";base64," + b64
-    msgs = [{"role": "user", "content": [{"type": "text", "text": pregunta}, {"type": "image_url", "image_url": {"url": url_img}}]}]
-    for nom, key, url, mods in (("tokenrouter", TR_KEY, TR_URL, ["z-ai/glm-4.6v"]),
-                                ("huggingface", HF_KEY, HF_URL, ["Qwen/Qwen2.5-VL-7B-Instruct", "meta-llama/Llama-3.2-11B-Vision-Instruct"]),
-                                ("openrouter", OR_KEY, "https://openrouter.ai/api/v1/chat/completions", ["openai/gpt-5.4-mini", "google/gemini-2.5-flash"])):
-        if not key: continue
-        for mod in mods:
-            try:
-                r = requests.post(url, headers={"Authorization": "Bearer " + key}, json={"model": mod, "messages": msgs, "max_tokens": 300}, timeout=15)
-                r.raise_for_status()
-                t = (r.json()["choices"][0]["message"]["content"] or "").strip()
-                if t: return parseo_monitor(t)
-            except Exception as e:
-                fallo(f"{nom}/{mod} foto: {str(e)[:60]}")
+                fallo(f"{nom}/preview intento{intento} foto: {str(e)[:50]}")
+    if OR_KEY:
+        try:
+            url_img = "data:" + (mime or "image/jpeg") + ";base64," + b64
+            r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": "Bearer " + OR_KEY}, json={"model": "openai/gpt-5.4-mini", "messages": [{"role":"user","content":[{"type":"text","text":pregunta},{"type":"image_url","image_url":{"url":url_img}}]}], "max_tokens": 200}, timeout=20)
+            r.raise_for_status()
+            t = (r.json()["choices"][0]["message"]["content"] or "").strip()
+            if t:
+                contar("openrouter")
+                return parseo_monitor(t)
+        except Exception as e:
+            fallo(f"openrouter foto: {str(e)[:50]}")
     return None
 
 def generar_voz(audio, mime, lang):
