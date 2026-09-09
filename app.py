@@ -447,20 +447,31 @@ def generar_foto(b64, mime, lang):
     parte_img = gtypes.Part.from_bytes(data=datos, mime_type=mime or "image/jpeg")
     for cli, nom in ((cliente_gemini_a, "gemini_a"), (cliente_gemini_b, "gemini_b")):
         if not cli: continue
+        for mod in ("gemini-3-flash-preview", "gemini-3-pro-preview"):
+            for cfg in (gtypes.GenerateContentConfig(max_output_tokens=1024, thinking_config=gtypes.ThinkingConfig(thinking_budget=0)), gtypes.GenerateContentConfig(max_output_tokens=1024)):
+                try:
+                    resp = cli.models.generate_content(model=mod, contents=[{"role":"user","parts":[{"text": pregunta}, parte_img]}], config=cfg)
+                    t = (resp.text or "").strip()
+                    p = parseo_monitor(t) if t else ""
+                    if p and "VALORES:" in p and re.search(r"\d", p):
+                        contar(nom)
+                        return p
+                    fallo(f"{nom}/{mod} foto sin numeros: {t[:40]}")
+                except Exception as e:
+                    fallo(f"{nom}/{mod} foto: {str(e)[:50]}")
+    if OR_KEY:
         try:
-            resp = cli.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[{"role":"user","parts":[{"text": pregunta}, parte_img]}],
-                config=gtypes.GenerateContentConfig(max_output_tokens=512)
-            )
-            t = (resp.text or "").strip()
+            url_img = "data:" + (mime or "image/jpeg") + ";base64," + b64
+            r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": "Bearer " + OR_KEY}, json={"model": "openai/gpt-5.4-mini", "messages": [{"role":"user","content":[{"type":"text","text":pregunta},{"type":"image_url","image_url":{"url":url_img}}]}], "max_tokens": 600}, timeout=20)
+            r.raise_for_status()
+            t = (r.json()["choices"][0]["message"]["content"] or "").strip()
             p = parseo_monitor(t) if t else ""
             if p and "VALORES:" in p and re.search(r"\d", p):
-                contar(nom)
+                contar("openrouter")
                 return p
-            fallo(f"{nom} foto sin numeros: {t[:40]}")
+            fallo(f"openrouter foto sin numeros: {t[:40]}")
         except Exception as e:
-            fallo(f"{nom} gemini-2.5-flash foto: {str(e)[:50]}")
+            fallo(f"openrouter foto: {str(e)[:50]}")
     return None
 
 def generar_voz(audio, mime, lang):
@@ -939,13 +950,16 @@ const chat=document.getElementById('chat');
 const pac=()=>localStorage.getItem('pac')||'';
 let langPref='auto',fontScale=1,thinkT=null,thinkS=0,rec=null,chunks=[];
 function aplicarFuente(){document.documentElement.style.setProperty('--fs',(20*fontScale)+'px')}
-function pinta(q,t,cls){const aud=cls&&cls.length>100?cls:'';const d=document.createElement('div');d.className='b '+(q?'yo':'bot')+(aud?'':(cls||''));d.innerHTML=t;if(aud){const au=document.createElement('audio');au.controls=true;au.src='data:audio/mpeg;base64,'+aud;d.appendChild(au)}chat.appendChild(d);const au=d.querySelector('audio');if(au){if(window._yaToco){au.play().catch(()=>{});}else{window._audPend=au;}}chat.scrollTop=chat.scrollHeight;return d}
+function pinta(q,t,cls){const aud=cls&&cls.length>100?cls:'';const d=document.createElement('div');d.className='b '+(q?'yo':'bot')+(aud?'':(cls||''));d.innerHTML=t;if(aud){const au=document.createElement('audio');au.controls=true;au.src='data:audio/mpeg;base64,'+aud;d.appendChild(au)}chat.appendChild(d);const au=d.querySelector('audio');if(au){colaAudio(au);}chat.scrollTop=chat.scrollHeight;return d}
 function textoVozJS(t){return (t||'').replace(/[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}\\u{2B00}-\\u{2BFF}\\u{1F1E6}-\\u{1F1FF}\\u{2764}\\u{2665}\\u{2705}]/gu,'').replace(/\\s+/g,' ').trim();}
 function vozFem(){try{const vs=speechSynthesis.getVoices();return vs.find(v=>/Dalia|Mónica|Monica|Paulina|Sabina|Elvira|female/i.test(v.name))||vs.find(v=>(v.lang||'').toLowerCase().startsWith('es'))||null;}catch(e){return null;}}
-function leer(t){try{const u=new SpeechSynthesisUtterance(textoVozJS(t));const v=vozFem();if(v)u.voice=v;u.lang=v?v.lang:'es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);}catch(e){}}
-window._avisoPend=null;window._audPend=null;window._yaToco=false;
+function leer(t){fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({texto:t,lang:'es'})}).then(r=>r.json()).then(a=>{if(a.audio){const au=new Audio('data:audio/mpeg;base64,'+a.audio);colaAudio(au);}}).catch(()=>{});}
+window._cola=[];window._sonando=false;window._yaToco=false;
+function sigAudio(){const au=window._cola.shift();if(!au){window._sonando=false;return;}window._sonando=true;au.onended=sigAudio;au.onerror=sigAudio;au.play().catch(()=>sigAudio());}
+function colaAudio(au){window._cola.push(au);if(window._yaToco&&!window._sonando)sigAudio();}
+window._avisoPend=null;
 function leerAuto(t){window._avisoPend=t;try{const u=new SpeechSynthesisUtterance(textoVozJS(t));const v=vozFem();if(v)u.voice=v;u.lang=v?v.lang:'es-MX';u.rate=0.95;speechSynthesis.cancel();speechSynthesis.speak(u);window._avisoPend=null;}catch(e){}}
-['pointerdown','keydown','touchstart'].forEach(ev=>window.addEventListener(ev,function(){window._yaToco=true;if(window._avisoPend){leer(window._avisoPend);window._avisoPend=null;}if(window._audPend){window._audPend.play().catch(()=>{});window._audPend=null;}}));
+['pointerdown','keydown','touchstart'].forEach(ev=>window.addEventListener(ev,function(){if(!window._yaToco){window._yaToco=true;sigAudio();}}));
 function pintaAviso(t,aud){pinta(false,t+`<br><button onclick="mandar('ya tomé mi medicina')" style="margin:4px;padding:8px 14px;border-radius:10px;border:none;background:#1b5e20;color:#fff;font-size:1em">✔ Ya tomé mi medicina</button><button onclick="mandar('ya me medí')" style="margin:4px;padding:8px 14px;border-radius:10px;border:none;background:#0f274d;color:#fff;font-size:1em">✔ Ya me medí</button>`,aud);}
 function typingOn(){typingOff();const d=document.createElement('div');d.className='msg bot typing';d.id='typing';d.innerHTML='<span></span><span></span><span></span> <small id="crono">0s</small>';document.getElementById('chat').appendChild(d);d.scrollIntoView({behavior:'smooth'});
  window._crono=0;window._cronoI=setInterval(()=>{window._crono++;const s=document.getElementById('crono');if(s)s.textContent=window._crono+'s';},1000);
@@ -968,7 +982,7 @@ function pintaCal(){const d0=JSON.parse(pac()||'{}');const id=d0.t||d0.n||'';con
 function verDia(d){const cs=window.diasDet&&window.diasDet[d]||[];document.getElementById('caldet').innerHTML=cs.length?cs.map(c=>'📅 Día '+d+': '+c.hora+' en '+c.lugar+' con '+c.doctor+'. '+(c.notas||'')).join('<br>'):'Sin citas ese día.';}
 function pensando(){quitando();pinta(false,'<span class="dots"><i></i><i></i><i></i></span> Trabajando en tu respuesta… <span id="tsec">0</span> s');thinkS=0;thinkT=setInterval(()=>{thinkS++;const e=document.getElementById('tsec');if(e)e.textContent=thinkS},1000)}
 function quitando(){if(thinkT){clearInterval(thinkT);thinkT=null}}
-function agregaAudio(el,texto,lang){fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({texto:texto,lang:lang})}).then(r=>r.json()).then(a=>{if(a.audio){const au=document.createElement('audio');au.controls=true;au.src='data:'+(a.mime||'audio/mpeg')+';base64,'+a.audio;el.appendChild(au);chat.scrollTop=chat.scrollHeight}}).catch(()=>{})}
+function agregaAudio(el,texto,lang){fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({texto:texto,lang:lang})}).then(r=>r.json()).then(a=>{if(a.audio){const au=document.createElement('audio');au.controls=true;au.src='data:'+(a.mime||'audio/mpeg')+';base64,'+a.audio;el.appendChild(au);colaAudio(au);chat.scrollTop=chat.scrollHeight}}).catch(()=>{})}
 function botMsg(d){const t=(d.texto||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\\n/g,'<br>');
  const el=pinta(false,t,d.triage==='critico'?' crit':'');
  if(d.texto)agregaAudio(el,d.texto,d.lang||'es');
