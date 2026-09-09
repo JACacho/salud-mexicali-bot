@@ -1,11 +1,3 @@
-<input type="file" id="ffoto" accept="image/*" hidden>
-
-
-function mandaFoto(f){if(!f)return;const elAviso=pinta(false,'📷 Recibí su foto. La estoy leyendo con calma, un momento por favor...');
- const fd=new FormData();fd.append('foto',f);fd.append('pac',pac());fd.append('lang',langPref==='auto'?'es':langPref);
- typingOn();fetch('/api/foto',{method:'POST',body:fd}).then(r=>{typingOff();if(!r.ok)throw new Error('foto '+r.status);return r.json()}).then(d=>{elAviso.remove();if(d&&d.texto)botMsg(d);else pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')}).catch(()=>{typingOff();elAviso.remove();pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')});};
-document.getElementById('ffoto').onchange=e=>{for(const f of e.target.files)mandaFoto(f);e.target.value='';};
- document.getElementById('bfoto').onclick=()=>document.getElementById('ffoto').click();
 import os, re, json, time, base64, threading, asyncio, tempfile, uuid, traceback
 import requests
 from flask import Flask, request, jsonify
@@ -951,7 +943,7 @@ body.alto #chat{background:#000}
  <button id="bvoz">🎤</button>
  <input id="txt" placeholder="Escribe aqui... (Enter envia)">
  <button id="benv">➤</button>
- <input type="file" id="ffoto" accept="image/*" hidden>
+ <input type="file" id="ffoto" accept="image/*" hidden multiple>
 </div>
 <script>
 const chat=document.getElementById('chat');
@@ -1020,13 +1012,13 @@ function mandar(t){enviarTexto(t);}
 document.getElementById('txt').onkeydown=e=>{if(e.key==='Enter')enviarTexto(e.target.value)};
 document.getElementById('benv').onclick=()=>enviarTexto(document.getElementById('txt').value);
 document.getElementById('bfoto').onclick=()=>document.getElementById('ffoto').click();
-function mandaFoto(f){if(!f)return;pinta(false,'📷 Recibí su foto. La estoy leyendo con calma, un momento por favor...');
+function mandaFoto(f){if(!f)return;const elAviso=pinta(false,'📷 Recibí su foto. La estoy leyendo con calma, un momento por favor...');
  const fd=new FormData();fd.append('foto',f);fd.append('pac',pac());fd.append('lang',langPref==='auto'?'es':langPref);
- typingOn();fetch('/api/foto',{method:'POST',body:fd}).then(r=>{typingOff();if(!r.ok)throw new Error('foto '+r.status);return r.json()}).then(d=>{if(chat.lastChild)chat.lastChild.remove();if(d&&d.texto)botMsg(d);else pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')}).catch(()=>{typingOff();if(chat.lastChild)chat.lastChild.remove();pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')});};
-document.getElementById('ffoto').onchange=e=>mandaFoto(e.target.files[0]);
+ typingOn();fetch('/api/foto',{method:'POST',body:fd}).then(r=>{typingOff();if(!r.ok)throw new Error('foto '+r.status);return r.json()}).then(d=>{elAviso.remove();if(d&&d.texto)botMsg(d);else pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')}).catch(()=>{typingOff();elAviso.remove();pinta(false,'No pude leer su foto esta vez. Intente de nuevo, o escriba su numerito con confianza.')});};
+document.getElementById('ffoto').onchange=e=>{for(const f of e.target.files)mandaFoto(f);e.target.value='';};
 window.addEventListener('dragover',function(e){e.preventDefault();});
-window.addEventListener('drop',function(e){e.preventDefault();const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];if(f&&f.type.indexOf('image/')===0)mandaFoto(f);});
-window.addEventListener('paste',function(e){const it=e.clipboardData&&e.clipboardData.items;for(let i=0;i<(it||[]).length;i++){if(it[i].type.indexOf('image/')===0){mandaFoto(it[i].getAsFile());break;}}});
+window.addEventListener('drop',function(e){e.preventDefault();for(const f of e.dataTransfer.files){if(f.type.indexOf('image/')===0)mandaFoto(f);}});
+window.addEventListener('paste',function(e){const it=e.clipboardData&&e.clipboardData.items;for(let i=0;i<(it||[]).length;i++){if(it[i].type.indexOf('image/')===0)mandaFoto(it[i].getAsFile());}});
 document.getElementById('bvoz').onclick=async()=>{
  if(rec){rec.stop();rec=null;document.getElementById('bvoz').textContent='🎤';return}
  document.getElementById('bvoz').textContent='⏹';chunks=[];
